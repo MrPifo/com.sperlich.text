@@ -1,0 +1,32 @@
+{
+  "name": "com.sperlich.text",
+  "version": "1.0.0",
+  "displayName": "Sperlich Text",
+  "description": "A TextMeshPro-style SDF text label and layout engine for uGUI. Own runtime atlas, no font-asset bake step, markup parser, curved baseline, auto-size, Burst text effects, typewriter reveal and an editing layer. Latin / German focus.",
+  "unity": "6000.0",
+  "author": {
+    "name": "Lion Sperlich",
+    "url": "https://github.com/MrPifo"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MrPifo/com.sperlich.text.git"
+  },
+  "keywords": [
+    "Sperlich",
+    "text",
+    "sdf",
+    "uGUI",
+    "layout",
+    "typography",
+    "markup"
+  ],
+  "dependencies": {
+    "com.sperlich.pausemanager": "https://github.com/MrPifo/com.sperlich.pausemanager.git",
+    "com.unity.ugui": "2.0.0",
+    "com.unity.burst": "1.8.30",
+    "com.unity.collections": "2.6.8",
+    "com.unity.mathematics": "1.3.3"
+  }
+}
