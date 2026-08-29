@@ -66,9 +66,14 @@ namespace Sperlich.Text {
 			}
 		}
 
+		private const int RampSamples = 64;
+
 		private static void RunEffect(BuiltinEffectParams p, int filter,
 			NativeArray<TextVertex> verts, NativeArray<int> quadStart, NativeArray<int> quadSource,
 			NativeArray<int> quadEffect, float time, int totalChars) {
+
+			NativeArray<float4> ramp = new NativeArray<float4>(RampSamples, Allocator.TempJob);
+			BuildRamp(p, ramp);
 
 			BuiltinEffectJob job = new BuiltinEffectJob {
 				Vertices = verts,
@@ -83,9 +88,24 @@ namespace Sperlich.Text {
 				Speed = p.Speed,
 				ColorA = new float4(p.ColorA.r, p.ColorA.g, p.ColorA.b, p.ColorA.a),
 				ColorB = new float4(p.ColorB.r, p.ColorB.g, p.ColorB.b, p.ColorB.a),
-				TotalChars = totalChars
+				TotalChars = totalChars,
+				Ramp = ramp,
+				RampLen = RampSamples
 			};
 			job.Schedule(quadStart.Length, 32).Complete();
+			ramp.Dispose();
+		}
+
+		/// <summary>Bakes the effect's <see cref="BuiltinEffectParams.Ramp"/> gradient into an evenly spaced
+		/// LUT on the main thread. Null / empty gradient -> a full HSV rainbow (the historical Rainbow look).</summary>
+		private static void BuildRamp(in BuiltinEffectParams p, NativeArray<float4> lut) {
+			UnityEngine.Gradient grad = p.Ramp;
+			bool has = grad != null && grad.colorKeys != null && grad.colorKeys.Length > 0;
+			for (int i = 0; i < lut.Length; i++) {
+				float t = i / (float)(lut.Length - 1);
+				UnityEngine.Color c = has ? grad.Evaluate(t) : UnityEngine.Color.HSVToRGB(math.frac(t), 0.85f, 1f);
+				lut[i] = new float4(c.r, c.g, c.b, c.a);
+			}
 		}
 
 		private static BuiltinEffectParams DefaultParams(BuiltinEffect e) {

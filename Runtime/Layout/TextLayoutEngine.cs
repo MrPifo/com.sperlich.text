@@ -17,9 +17,10 @@ namespace Sperlich.Text {
 		public TextWrap Wrap;
 		public TextOverflow Overflow;
 
-		public float LineSpacingMul;    // multiple of the natural line height
+		public float LineSpacingMul;    // "Line Height": extra leading as a fraction of the natural line box (0 = single)
 		public float ParagraphSpacingMul;
 		public float ExtraTrackingEm;   // global tracking on top of per-span cspace
+		public float WordSpacingEm;     // extra advance added to every space, in em of that space's font size
 		public bool AutoUppercaseTracking;
 
 		public CurvedBaseline Curve;    // null = straight baseline
@@ -28,10 +29,11 @@ namespace Sperlich.Text {
 			BaseFontSize = 32f,
 			Align = TextAlign.Left,
 			VerticalAlign = TextVerticalAlign.Top,
-			Wrap = TextWrap.Word,
+			Wrap = TextWrap.WordThenChar,
 			Overflow = TextOverflow.Overflow,
-			LineSpacingMul = 1f,
-			ParagraphSpacingMul = 1f,
+			LineSpacingMul = 0f,
+			ParagraphSpacingMul = 0f,
+			WordSpacingEm = 0f,
 			AutoUppercaseTracking = true
 		};
 	}
@@ -153,6 +155,9 @@ namespace Sperlich.Text {
 					kerning = store.Fonts.GetKerning(data.FaceIndex, prevGlyphIndex, data.GlyphIndex) * unitScale;
 				}
 
+				// extra gap on top of every space (does not stretch under justification — that is handled separately)
+				float wordExtraPx = space && !inlineObject ? input.WordSpacingEm * fontSize : 0f;
+
 				work.Add(new WorkGlyph {
 					Source = i,
 					Span = spanIndex,
@@ -160,7 +165,7 @@ namespace Sperlich.Text {
 					FontSize = fontSize,
 					UnitScale = unitScale,
 					BaselineShiftPx = style.BaselineShift * fontSize,
-					TrackingPx = trackingEm * fontSize + kerning,
+					TrackingPx = trackingEm * fontSize + kerning + wordExtraPx,
 					Ascent = ascent,
 					Descent = descent,
 					Data = data,
@@ -398,7 +403,8 @@ namespace Sperlich.Text {
 		// -- stage 5: vertical placement -------------------------------------------------------
 
 		private void PlaceVertically(in TextLayoutInput input) {
-			float lineSpacing = math.max(0.1f, input.LineSpacingMul);
+			// "Line Height" is extra leading as a fraction of the natural line box: 0 = single spacing.
+			float leading = 1f + math.max(-0.9f, input.LineSpacingMul);
 			float paragraphExtra = input.BaseFontSize
 				* (TypographyDefaults.ParagraphSpacing - TypographyDefaults.LineSpacing)
 				* math.max(0f, input.ParagraphSpacingMul);
@@ -407,7 +413,7 @@ namespace Sperlich.Text {
 			for (int li = 0; li < result.Lines.Count; li++) {
 				LineInfo line = result.Lines[li];
 				float natural = math.max(line.Ascent + line.Descent, input.BaseFontSize);
-				float lineHeight = natural * TypographyDefaults.LineSpacing * lineSpacing;
+				float lineHeight = natural * leading;
 
 				float baselineY = y - line.Ascent;
 				line.BaselineY = baselineY;

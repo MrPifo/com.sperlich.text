@@ -27,13 +27,15 @@ namespace Sperlich.Text {
 		private readonly List<LinkRegion> links = new(4);
 		private readonly List<InlineInsert> inserts = new(4);
 
-		public MarkupResult Parse(string source, bool richText = true) {
+		/// <param name="baseStyle">Style the whole text starts from (component-level "Font Style" etc.).
+		/// <c>null</c> uses <see cref="StyleState.Default"/>.</param>
+		public MarkupResult Parse(string source, bool richText = true, StyleState? baseStyle = null) {
 			stack.Clear();
 			sb.Clear();
 			spans.Clear();
 			links.Clear();
 			inserts.Clear();
-			stack.Push(StyleState.Default);
+			stack.Push(baseStyle ?? StyleState.Default);
 
 			int spanStart = 0;
 			StyleState spanStyle = stack.Peek();
@@ -140,7 +142,8 @@ namespace Sperlich.Text {
 				case "glitch": s.SpanEffect = BuiltinEffect.Glitch; break;
 				case "outline": ApplyOutline(ref s, value); break;
 				case "shadow": ApplyShadow(ref s, value); break;
-				case "glow": ApplyGlow(ref s, value); break;
+				case "glow": ApplyGlow(ref s, value, false); break;
+				case "bloom": ApplyGlow(ref s, value, true); break;
 				case "link": {
 					int id = links.Count;
 					links.Add(new LinkRegion { Id = value ?? id.ToString(), Start = sb.Length, Length = 0 });
@@ -309,18 +312,28 @@ namespace Sperlich.Text {
 				s.ShadowSoftness = Mathf.Clamp(soft, 0f, 0.5f);
 		}
 
-		private static void ApplyGlow(ref StyleState s, string v) {
+		private static void ApplyGlow(ref StyleState s, string v, bool bloom) {
 			s.HasGlow = true;
+			s.GlowBloom = bloom;
 			s.GlowColor = new float4(1f, 0.92f, 0.65f, 1f);
-			s.GlowRadius = 0.6f;
-			s.GlowIntensity = 1f;
+			s.GlowRadius = bloom ? 1f : 0.6f;
+			s.GlowIntensity = bloom ? 2f : 1f;
 			if (string.IsNullOrEmpty(v)) return;
 			string[] p = v.Split(',');
-			if (TryColor(p[0].Trim(), out float4 c)) s.GlowColor = c;
-			if (p.Length > 1 && float.TryParse(p[1].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float r))
-				s.GlowRadius = Mathf.Clamp(r, 0.05f, 1f);
-			if (p.Length > 2 && float.TryParse(p[2].Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out float it))
-				s.GlowIntensity = Mathf.Clamp(it, 0f, 4f);
+			int numIdx = 0;
+			for (int i = 0; i < p.Length; i++) {
+				string tok = p[i].Trim();
+				if (tok.Length == 0) continue;
+				// "bloom" keyword may sit anywhere in the arg list of a plain <glow> tag
+				if (string.Equals(tok, "bloom", System.StringComparison.OrdinalIgnoreCase)) { s.GlowBloom = true; continue; }
+				if (i == 0 && TryColor(tok, out float4 c)) { s.GlowColor = c; continue; }
+				if (numIdx == 0 && float.TryParse(tok, NumberStyles.Float, CultureInfo.InvariantCulture, out float r)) {
+					s.GlowRadius = Mathf.Clamp(r, 0.05f, 1f); numIdx++; continue;
+				}
+				if (numIdx == 1 && float.TryParse(tok, NumberStyles.Float, CultureInfo.InvariantCulture, out float it)) {
+					s.GlowIntensity = Mathf.Clamp(it, 0f, 4f); numIdx++; continue;
+				}
+			}
 		}
 
 		private static float ParseEm(string v) {

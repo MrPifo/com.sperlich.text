@@ -1,134 +1,384 @@
 # Sperlich.Text — working notes for Claude
 
-Isolated context for this package only. Not a project-wide status file — see the repo-root
-`PROGRESS.md` for that. Read this first when a session touches `Assets/Sperlich/Text/`.
+Isolated context for this package only. Read this first when a session touches
+`Assets/com.sperlich.text/`.
 
 ## What this is
 
-A TextMeshPro-style label for **uGUI** (`SperlichText : MaskableGraphic`). Own SDF atlas at
-runtime, no font-asset bake step. Latin / German focus. Reusable `Sperlich.*` package — **must not
-take hard dependencies on BattleTanks gameplay code** (so `SperlichText` does NOT derive from
-`MonoBase`; it derives straight from `MaskableGraphic`).
+A TextMeshPro-style label for **uGUI** (`SperlichText : MaskableGraphic`). Latin / German focus.
+Reusable `Sperlich.*` package — **no hard dependency on game code** (so `SperlichText` derives straight
+from `MaskableGraphic`, not from any project base class).
 
-Namespaces: `Sperlich.Text` (runtime), `Sperlich.Text.EditorTools` (editor).
+Namespaces: `Sperlich.Text` (runtime), `Sperlich.Text.Rasterizer` (the msdfgen port, own asmdef),
+`Sperlich.Text.EditorTools` (editor).
 
-## Hard architecture decisions (do not undo without asking)
+## Two glyph-field backends (`FontDefinition.fieldKind`)
 
-1. **SDF atlas comes from `TMP_FontAsset.CreateFontAsset(...)` in `AtlasPopulationMode.Dynamic`.**
-   Unity 6's public `FontEngine` API cannot rasterise a glyph to a texture — every render method
-   (`RenderGlyphToTexture`, `TryAddGlyphToTexture`, …) is `internal`. TMP dynamic mode is the only
-   public path. All TMP contact is isolated to `Fonts/FontAccess.cs` + `Pipeline/GlyphStore.cs`.
-   msdfgen / MTSDF would replace only `FontAccess`. This adds an asmdef ref on `Unity.TextMeshPro`
-   (already in the project via `com.unity.ugui`).
-2. **Mesh hand-off is the standard uGUI path: `OnPopulateMesh(VertexHelper)` +
-   `TextMeshBuilder.FillVertexHelper(vh)`.** A custom vertex format + `canvasRenderer.SetMesh` was
-   tried and does NOT work in edit mode / CanvasRenderer rejects the format. Do not reintroduce a
-   custom `UpdateGeometry`/`UpdateMaterial`. `TextMeshBuilder.Apply(Mesh)` (MeshData path) is kept
-   but unused — reserved for a future world-space renderer.
-3. **Single time source** via `Common/SperlichTextClock.cs`. The package has **no** pause-system
-   dependency. The clock follows `Time.deltaTime` by default; the host makes it pause-aware by
-   setting `SperlichTextClock.IsPausedProvider` (or replacing `DeltaTimeProvider` / `TimeProvider`).
+The renderer draws from an atlas of signed-distance glyphs. There are **two ways** to get that atlas,
+chosen per `FontDefinition`:
 
-## File map (runtime, under `Runtime/`)
+### SDF (default) — TMP dynamic atlas
 
-- `Common/` — `TextEnums.cs`, `SperlichTextClock.cs`, `TextVertex.cs` (88-byte blittable struct,
-  `uv0`: xy=atlasUV, z=sdfScale (negative = solid-fill flag), w=weightBias; `uv1`: x=fxMode
-  0 face / 1 outline / 2 glow, y=width/softness, z=glow intensity), `TypographyDefaults.cs`
-- `Fonts/` — `FontAccess.cs` (TMP wrapper, primary + fallback list), `FaceMetrics.cs`,
-  `GlyphData.cs`, `FontDefinition.cs` (SO)
-- `Pipeline/GlyphStore.cs` — glyph queue, tofu placeholder, amortised `ProcessQueue(budget)`,
-  atlas-full rebuild via `ClearFontAssetData(false)`
-- `Atlas/ShelfPacker.cs` — unit-tested, only used on the future MTSDF path (TMP owns packing now)
-- `Markup/` — `MarkupParser.cs` (stack-based), `StyleSpan.cs` (`StyleState` carries every span
-  property incl. per-tag outline/shadow/glow + `GradientScope`)
-- `Layout/` — `LineBreaker.cs` (UAX #14 subset), `TextLayoutEngine.cs`, `LayoutResult.cs`,
-  `CurvedBaseline.cs`, `AutoSizeSolver.cs`
-- `Mesh/TextMeshBuilder.cs` — quads for glyph / underline / mark / selection + `EmitSpanFx` extra
-  geometry for per-tag shadow/glow/outline; `ComputeGradientBounds` run-wide gradient pre-pass
-- `Effects/` — `ITextEffect` (plain C#), `BuiltinEffectJob` (`[BurstCompile] IJobParallelFor`,
-  `EffectFilter` selects per-span vs component-level), `TextEffectStack`, `RevealController`
-- `Rendering/` — `SperlichText.cs`, `GlyphStoreRegistry.cs` (ref-counted store per FontDefinition),
-  `SperlichTextSettings.cs` (SO, from `Resources/`)
-- `Shaders/SperlichTextSDF.shader` — ShaderLab, uGUI/CanvasRenderer compatible, `fxMode` branch in
-  frag for outline/glow/shadow copies + component-level outline/glow/underlay blocks
-- `Interaction/` `Editing/` `Glyphs/` `Adapters/Rewired/` — link hit-test, basic input field,
-  `ITextGlyphSource` abstraction, opt-in Rewired adapter (`#if SPERLICH_TEXT_REWIRED`, off)
+`TMP_FontAsset.CreateFontAsset(...)` in `AtlasPopulationMode.Dynamic`. Unity 6's public `FontEngine`
+API cannot rasterise a glyph to a texture (`RenderGlyphToTexture` etc. are all `internal`), so TMP
+dynamic mode is the only public path. Rasterises **any code point on demand at runtime**. Softer
+corners, size-dependent quality. All TMP contact is isolated to `Fonts/FontAccess.cs` +
+`Pipeline/GlyphStore.cs`.
 
-Editor: `Editor/SperlichTextEditor.cs` (grouped inspector, tag toolbar, readability lint),
-`Editor/SperlichTextEditorTicker.cs` (`[InitializeOnLoad]` + `EditorApplication.update`, ~60 fps,
-drives animated effects in edit mode via `SperlichText.EditorAnimateTick()`).
+### MTSDF (opt-in) — self-hosted, pre-baked  ✅ IMPLEMENTED
 
-Tests: `Tests/` — `ShelfPacker`, `LineBreaker`, `AutoSizeSolver`, `MarkupParser`, `CurvedBaseline`
-(pure logic, no FontEngine/TMP).
+Multi-channel SDF (median of RGB = sharp corners) **+ true SDF in alpha** (smooth, for
+outline / glow / shadow). Generated by our **own pure-C# port of Chlumsky `msdfgen`** under
+`Runtime/Rasterizer/`, at **editor bake time**, into platform-neutral assets (`Texture2D` RGBA32
+linear + `MsdfFontData` ScriptableObject, both added as sub-assets of the `FontDefinition`).
+**No font bytes and no rasteriser at runtime** — the atlas is a fixed pre-baked charset. Sharper
+corners, size-stable, but every glyph you show must be in the baked charset.
 
-## Current state (2026-08-29)
+Font parsing at bake time: vendored **`Typography.OpenFont`** under `ThirdParty/` (pure managed,
+glyf + CFF), own asmdef `Sperlich.Text.ThirdParty.OpenFont`.
 
-Everything compiles. **Text renders correctly in edit mode** (user confirmed). On top of the v1
-raw build these feature batches landed and are **awaiting the user's test + a list of
-corrections** (user said corrections are coming next):
+## The seam (how the two backends plug in)
 
-- **Gradient scope**: `GradientScope { Run, PerChar, Stepped }`. Tag keywords in any order:
-  `h`/`horizontal` · `v`/`vertical` · `perchar` · `perword`/`run`/`smooth` ·
-  `stepped`/`step`/`blocky`/`quantized`. `Run` = one smooth gradient across the whole tagged run
-  (via `ComputeGradientBounds`). `Stepped` = each letter one flat colour, stepping toward the end.
-  2 or 4 colour stops.
-- **Per-tag decoration**: `<outline=#c,width>`, `<shadow=#c,dx,dy,soft>`, `<glow=#c,radius,intensity>`
-  — extra geometry quads from `EmitSpanFx`, `uv1`-packed mode read by the shader `fxMode` branch.
-  `<glowpulse>` = the old animated glow (`BuiltinEffect.Glow`).
-- **Edit-mode animated effects**: `wave/shake/pulse/rainbow/glitch` + glowpulse now preview
-  outside Play mode, always time-driven (the editor ticker).
-- **Component-level Face & Material FX** fields on `SperlichText` (whole label):
-  `m_faceDilate/m_sharpness/m_outlineColor/m_outlineWidth/m_shadowColor/m_shadowOffset/`
-  `m_shadowSoftness/m_shadowDilate/m_glowColor/m_glowPower/m_glowOuter` → `PushMaterialProps()`
-  sets shader `_FaceDilate/_Sharpness/_OutlineColor/_OutlineWidth/_UnderlayColor/_UnderlayOffset/`
-  `_UnderlayDilate/_GlowColor/_GlowPower/_GlowOuter`.
-- **Base Color** now actually tints (`tint` in `TextMeshBuilder.Build`, `SperlichText` passes
-  `color`).
-- **Align**: `TextAlign { Left, Center, Right, Justified, Flush, GeometryCenter }`. Real
-  `JustifyLine` (distributes slack over breaking spaces, skips trailing spaces). `Justified` skips
-  the last line of a paragraph; `Flush` justifies every line incl. last (interpretation not yet
-  confirmed by the user). `GeometryCenter` centres on the ink box, not the advance width.
-- **Readability lint** always shows an Info/Warning HelpBox (was silent). Advisory only — changes
-  nothing at runtime.
+- `Runtime/Fonts/IFontFaceSource.cs` — interface `GlyphStore` talks to instead of a concrete class.
+  Members: `Definition`, `IsReady`, `SupportsDynamicGeneration`, `FieldKind`, `AtlasTexture`,
+  `AtlasSize`, `DistanceRange`, `GetMetrics(int)`, `PrimaryMetrics`,
+  `TryGetGlyph(uint,out int,out GlyphEntry)`, `TryAddGlyphs(uint[])`, `GetKerning`, `ClearDynamicData`.
+- `Runtime/Fonts/GlyphEntry.cs` — blittable struct crossing the seam (was `TMP_Character`). Carries
+  the final atlas rect (bottom-left origin, padding folded in) so `GlyphStore` holds no backend rect
+  math.
+- `Runtime/Fonts/FontAccess.cs` — `: IFontFaceSource`, the SDF/TMP impl. `SupportsDynamicGeneration
+  => true`. `DistanceRange => (atlasPadding ?? sdfPadding) + 1` (the TMP `gradientScale` quirk lives
+  here).
+- `Runtime/Fonts/MsdfFontFaceSource.cs` — `: IFontFaceSource` over `def.bakedData`.
+  `SupportsDynamicGeneration => false`, `AtlasTexture => data.atlas`,
+  `DistanceRange => max(1, data.pixelRange * 0.5)`, `TryAddGlyphs => false`.
+- `Runtime/Fonts/MsdfFontData.cs` — the baked SO: `atlas`, `atlasSize`, `pixelRange`, `emSize`,
+  `fieldKind`, `sourceHash`, `FaceRecord[] faces` (assetPath + `FaceMetrics`), `GlyphRecord[] glyphs`
+  (face, codepoint, glyphIndex, advance, w/h, bearingX/Y, rect X/Y/W/H bottom-left px + margin,
+  padding), `KerningRecord[] kerning`. Non-serialised lookup dicts built on enable
+  (`InvalidateLookups`).
+- `Runtime/Rendering/GlyphStoreRegistry.cs` — `Acquire`: `fieldKind == MTSDF && HasBakedData` →
+  `new MsdfFontFaceSource(font)`, else `new FontAccess(font)` (MTSDF-but-unbaked logs a warning and
+  falls back). One store per `FontDefinition`, ref-counted. `EditorPurgeAll()` drops the cache.
+- `GlyphStore` **static-source guard**: when `!SupportsDynamicGeneration` it drains the request queue
+  (resolve hits, route misses to `permanentMissing` + placeholder), never calls `TryAddGlyphs` in a
+  loop, never `RebuildAtlas`.
+
+## The msdfgen port (`Runtime/Rasterizer/`)
+
+Independent C# port of Chlumsky/msdfgen, cross-checked against DWVoid/Msdfgen.Net and vazgriz/CSGL.
+Managed only, no Burst/unsafe. Modules: `MsdfMath`/`MsdfArithmetics`, `EdgeColor`, `SignedDistance`,
+`EquationSolver`, `EdgeSegment` (+Linear/Quadratic/Cubic), `Contour`, `Shape`, `Scanline`,
+`Projection`, `BitmapRef`/`FloatBitmap`, `EdgeSelectors`, `ContourCombiners`, `ShapeDistanceFinder`,
+`EdgeColoring` (`EdgeColoringSimple`), `MSDFErrorCorrection`, `MsdfGenerator`
+(`Fill1/Fill3/Fill4` + `GenerateMSDF/GenerateMTSDF`), `MsdfGeneratorConfig`/`ErrorCorrectionConfig`.
+
+Plus two pieces msdfgen normally delegates to Skia / an old scanline pass — reimplemented here:
+
+### `SignCorrection.cs` — scanline sign pass
+
+Per-pixel non-zero winding test; flips the field sign where it disagrees with the true fill (fixes
+self-intersecting contours, e.g. Comfortaa `e` figure-8 counter). Deep-overlap-union clamp
+(`DeepOverlapFloor = 0.82`) where `|winding| >= 2`. Wired into `MsdfGenerator` after each `FillN`,
+gated by the static `MsdfGenerator.SignCorrectionEnabled` (bake param `msdfSignCorrection`).
+
+### `ShapeResolver.cs` — overlap / self-intersection resolver (pure-C# Skia stand-in)
+
+Modern msdfgen relies **entirely** on Skia `resolveShapeGeometry()` to union overlapping contours
+before edge-colouring; without it the MSDF median breaks at stroke joins (visible as a detached
+piece in the RGB channels while the alpha/true-SDF stays clean). We don't have Skia, so:
+
+1. `WeldSharedContourEdges` **pre-pass** — merges two same-winding contours that share exactly one
+   coincident-opposite edge (a designer split of one filled region, e.g. Comfortaa `h` ascender = two
+   stacked boxes meeting at y=223). Splices the edge chains, drops the shared edge.
+2. Split every edge at each intersection param (line×line analytic, line×curve polynomial roots,
+   curve×curve adaptive bbox subdivision). Collinear-overlap stretches (`OverlapRange`) are cut at
+   their bounds instead of flooded with tiny cuts.
+3. Keep only sub-edges where the ORIGINAL shape's non-zero winding **differs across** them (interior
+   arcs vanish — that's what removes the `8` waist seam). Orient filled-on-the-right.
+   `DedupCoincident` drops bodies that lie on another edge.
+4. `WalkContours` — chain boundary edges picking the **sharpest right turn**; `out bool clean` is
+   false on: guard-hit, **ambiguous junction** (two best continuations within ~11°), dead end, stub
+   contour, orphaned edges.
+5. Safety gate: `if (!cleanWalk) return shape;` (unresolved beats scrambled — the € sign);
+   `SilhouetteMatches` (scanline coverage area within 6%).
+
+`ShapeResolver.LastNote` (public string) records why the last `Resolve` returned what it did
+(`"ok: resolved N contour(s)"` / `"fallback: walk not clean (…)"` / …) — read by the debug dump.
+
+**LiberationSans and normal text fonts resolve cleanly. Comfortaa & geometric display faces (built
+from overlapping stroke pieces) are the case this exists for.** Too-low `Msdf Em Size` re-breaks
+tight junctions (sub-pixel degeneracy) — keep em ≥ ~40, 48+ for geometric faces.
+
+### `GlyphShapeBuilder.cs`
+
+`Build(RawGlyphOutline raw, bool reorient = false, bool resolveOverlaps = true)` →
+`shape.Normalize()`; `if (resolveOverlaps) shape = ShapeResolver.Resolve(shape); else if (reorient)
+shape.OrientContours()`. **`Shape.OrientContours()` is dead in the bake path** — Comfortaa's raw glyf
+winding is already correct and `OrientContours` was corrupting it. `reorient` defaults false.
+
+## Bake pipeline (`Editor/Msdf/`)
+
+- `MsdfBaker.cs` — `BakeToMemory(FontDefinition, MsdfBakeParams)` (unit-testable core) and
+  `BakeAsset(FontDefinition)` (button + `Assets/Sperlich Text/Bake MTSDF Atlas` menu). Per face →
+  per codepoint → `FontOutlineSource` → `GlyphShapeBuilder.Build` → `EdgeColoringSimple` →
+  `GenerateMTSDF` + error correction → `float[w*h*4]`; `ShelfPacker` packs height-desc; steps atlas
+  size up to `msdfMaxAtlas`, else drops codepoints with a report. Blits float→`Color32` with the
+  vertical flip so texel (0,0) = bottom-left.
+  - `margin = ceil(pixelRange/2) + 1 + msdfGlowPadding` — the field half-range **plus** transparent
+    room for the `<glow>`/`<shadow>` blur to spread into.
+  - **int-division trap (fixed, keep the cast):** `float s = (float) p.emSize / max(1, unitsPerEm)`.
+  - `BakeAsset` removes **all** old `MsdfFontData` / `*MTSDF Atlas` sub-assets, re-adds fresh ones,
+    then `GlyphStoreRegistry.EditorPurgeAll()` + `EditorRebindFont()` on every live `SperlichText`
+    (otherwise a cached store keeps rendering the previous atlas).
+  - `ComputeHash(def, params)` → `MsdfFontData.sourceHash`; the inspector shows "OUT OF DATE" when it
+    no longer matches (font file mtime or any bake param changed).
+- `MsdfBakeParams` fields: `charset`, `extraChars`, `emSize`, `pixelRange`, `glowPadding`, `maxAtlas`,
+  `edgeAngle`, `errorCorrection`, `aggressiveErrorCorrection`, `signCorrection`, `resolveOverlaps`.
+- `MsdfCharsetPresets.cs` — `enum MsdfCharset { Ascii, Latin1, LatinExtended, Wgl4 }`, strictly
+  nested, standards-based:
+  - `Ascii` U+0020..007E · `Latin1` + ISO-8859-1 supplement · `LatinExtended` + Latin Extended-A +
+    standard typographic punctuation (curly quotes, dashes, …, €, ẞ, typographic spaces) —
+    **good default** · `Wgl4` = full Windows Glyph List 4 (+ Greek, Cyrillic, arrows, math, fractions,
+    box drawing; ~650 glyphs, bigger atlas). `msdfExtraChars` (BMP only) is added on top of any
+    preset.
+- `FontDefinition` MTSDF fields: `msdfCharset` (= `LatinExtended`), `msdfExtraChars`, `msdfEmSize`
+  (48), `msdfPixelRange` (6), `msdfGlowPadding` (16), `msdfMaxAtlas` (2048), `msdfEdgeAngle` (3),
+  `msdfErrorCorrection` (true), `msdfSignCorrection` (true), `msdfAggressiveErrorCorrection` (false),
+  `msdfResolveOverlaps` (true). The last four are **diagnostic only** — live in the collapsed
+  "Advanced / Diagnostic" inspector section.
+
+## Shader (`Runtime/Shaders/SperlichTextSDF.shader`)
+
+- `#pragma target 3.0`, `#pragma multi_compile_local _ SPERLICH_MTSDF`.
+- `median3(float3)` before `coverage`. `coverage()` is `fwidth`-based (`px = (dist-threshold)/fwidth`)
+  → ~1px AA at any size, independent of a per-vertex scale (uGUI does not reliably deliver `uv0.z/.w`
+  to frag).
+- Field sample: `#ifdef SPERLICH_MTSDF` → `sd = median3(rgb)` (sharp face) **and** `sdSoft =
+  tex.a` (true SDF, smooth — used by outline/glow/shadow). `#else` both = `tex.a`. `d` / `dSoft` /
+  `dFloor` derived from those + `_FaceDilate*0.5 + i.uv0.w`.
+- **Per-tag `<glow>`** (`fxMode > 1.5`): a 16-tap **ring blur** of the glyph coverage, clamped to the
+  glyph's own atlas cell (`i.cellRect` = `(u0,v0,u1,v1)` passed in `tangent`), spreading into the
+  transparent `Msdf Glow Padding`. `i.uv1.y` = blur radius in UV units, `i.uv1.z` = intensity,
+  `i.uv1.w` = bloom flag. Bloom: wider outer ring, heavier tail, white-hot core
+  (`lerp(color, white, (halo-0.55)*2.4)`).
+- Component-level outline / glow / underlay now read `dSoft` (glow also subtracts the clamped-field
+  pedestal so a fully-outside region reads as 0, not a faint box).
+
+**Critical:** `SperlichText.EnsureCanvasShaderChannels()` sets
+`canvas.additionalShaderChannels |= TexCoord1 | Normal | Tangent` (in `OnEnable`,
+`OnCanvasHierarchyChanged`, and first line of `OnPopulateMesh`). Without it uGUI drops `TEXCOORD1` /
+`TANGENT` → garbage `fxMode` / missing `cellRect` → blur boxes + soft blobs. This was THE fix for the
+white-box / blur bug.
+
+`PushMaterialProps()` toggles `SPERLICH_MTSDF` from `boundFont.fieldKind == MTSDF && store.Fonts
+.FieldKind == MTSDF`.
+
+## Mesh (`Runtime/Mesh/TextMeshBuilder.cs`)
+
+- `TextVertex`: `uv0` xy=atlasUV, z=sdfScale (negative = solid-fill flag), w=weightBias; `uv1`
+  x=fxMode (0 face / 1 outline / 2 glow), y=width/softness/glow-radius, z=glow intensity, **w=bloom
+  flag**; `tangent` = per-tag-glow quad's own cell uv-rect `(u0,v0,u1,v1)` (dummy `(1,0,0,-1)` on
+  normal quads).
+- Bold/light weight bias is heavier on the MTSDF backend (`boldBias = mtsdf ? 0.32 : 0.20`,
+  `lightBias = mtsdf ? 0.22 : 0.14`) because MTSDF fields are normalised over a much narrower range.
+- `EmitSpanFx` Glow branch: no quad grow (the baked cell already has `pad` transparent px); radius =
+  `saturate(GlowRadius) * pad / atlasSize` (× 1.7 for bloom); `mode.w` = bloom; `fxTangent` = cell
+  rect. `BloomFace()` tints the glyph vertex colours toward `lerp(glowColor, white, 0.6)` when the
+  span has `<bloom>`.
+
+## Markup (`Runtime/Markup/`)
+
+- `<bloom=#c,radius,intensity>` (alias: `<glow=…,bloom>`) — wide blown-out neon. Sets
+  `StyleState.GlowBloom`. `ApplyGlow(ref s, v, bool bloom)`; `bloom` keyword may appear anywhere in a
+  `<glow>` arg list.
+- `<glow=#c,radius,intensity>` — `radius` is a **0..1 fraction of the baked `Msdf Glow Padding`**.
+  Spread is capped by that padding (bake bigger for a bigger halo). `<glowpulse>` = the old animated
+  glow (`BuiltinEffect.Glow`), unrelated.
+- Gradient scope keywords, per-tag outline/shadow — unchanged from before.
+
+## Layout (`Runtime/Layout/TextLayoutEngine.cs`) — recent changes
+
+- `TextWrap.WordThenChar` is the **default**; `[InspectorName]` display names: "Off (single line)" /
+  "Wrap at words" / "Wrap, break long words".
+- **"Line Height"** = `m_lineSpacing` / `TextLayoutInput.LineSpacingMul`. Semantics **changed**: it is
+  now *extra leading as a fraction of the natural line box* — `lineHeight = natural * (1 + max(-0.9,
+  LineSpacingMul))`. **Default 0** (= single spacing). (Old semantics: multiple of `natural × 1.5`,
+  default 1.)
+- **"Character Spacing"** = `m_extraTrackingEm` (label rename only; still global tracking em added per
+  glyph).
+- **"Word Spacing"** = `m_wordSpacingEm` → `TextLayoutInput.WordSpacingEm` → `wordExtraPx =
+  WordSpacingEm * fontSize` added to every space glyph's `TrackingPx`. **NEW.** Default 0.
+- **"Paragraph Spacing"** = `m_paragraphSpacing` / `ParagraphSpacingMul` — extra vertical gap after a
+  line that ends with a hard `\n`, = `BaseFontSize * 0.5 * ParagraphSpacingMul`. **Default 0** (was
+  1).
+- `Justified` / `Flush` only do something with a **fixed-width RectTransform wider than the line**
+  and multiple spaces on the line; an auto-width label or a line that already fills the width shows
+  no change.
+
+⚠️ **Existing `SperlichText` components in scenes still have the old serialised values** for
+`m_wrap` / `m_lineSpacing` / `m_paragraphSpacing`. They need a manual reset (right-click field →
+Revert Prefab, or set the new default).
+
+## Editors — rewritten on UI Toolkit + `Sperlich.EditorKit`
+
+Both inspectors are `CreateInspectorGUI()` (UI Toolkit), styled with the shared **`com.sperlich
+.editorkit`** package (`Sperlich.EditorKit` asmdef, referenced from `Sperlich.Text.Editor.asmdef`):
+`SperlichEditorTheme` (colour tokens), `SperlichEditorWidgets` (`CreateChevronSection`,
+`CreateEnumDropdown`, `CreateSegmentedControl`, `CreateAlignedRow`, `CreateDraggableBar`,
+`MakeButton`, `CreateBadge`, `CreateBox`, `SetRadius/SetBorderColor/SetHoverCursor`), `PillToggle`.
+
+### `Editor/SperlichTextEditor.cs`
+
+- Collapsible chevron sections: CONTENT · LAYOUT (sizing folded in) · EFFECTS · FACE · OUTLINE ·
+  DROP SHADOW · GLOW · uGUI. The four material-FX sections replaced the old `[Header]` attributes on
+  the `SperlichText` fields (those headers were **removed** from the runtime class).
+- Every row goes through one shared `SperlichFieldColumn col = new(130f)` (EditorKit). It gives a
+  fixed **pixel** label column: `col.Property(sp, "Label")` styles the PropertyField's own internal
+  label to the column width (so numeric fields keep Unity's drag-to-scrub handle) and de-aligns it;
+  `col.Row("Label", control)` puts a matching label before a custom control; `col.Property(.., indent:1)`
+  shifts only the label for nested rows. `SperlichFieldColumn.Raw(sp)` = full-width PropertyField for
+  foldout props (`m_builtinEffects`, `m_reveal`). The old `MatchLabelWidths` / `LabelPercent` hack is gone.
+- **Font Style** row = `SperlichEditorWidgets.CreateFlagButtons` over `m_fontStyle` (`TextFontStyle`
+  `[Flags]`: Bold/Italic/Underline/Strikethrough/Uppercase/Lowercase/SmallCaps; last three mutually
+  exclusive). Seeded into the parser as the base `StyleState` via `MarkupParser.Parse(.., baseStyle)`
+  → covers the whole label, rich-text tags still layer on top.
+- **Margins** = `m_marginLeft/Right/Top/Bottom` floats; `SperlichText.ContentRectSize` / `ContentOrigin`
+  inset the layout rect + mesh origin (TMP-style padding). Shown as one compact 4-field cluster
+  (`SperlichEditorWidgets.CreateCompactField` + `CreateFieldCluster`), same for the **Spacing Options
+  (em)** cluster (Character / Word / Line / Paragraph = `m_extraTrackingEm` / `m_wordSpacingEm` /
+  `m_lineSpacing` / `m_paragraphSpacing`).
+- `SperlichInspectorScroll.Preserve(root, target)` (EditorKit) keeps the inspector ScrollView position
+  across Undo/Redo rebuilds (Unity otherwise snaps it to the top).
+- **Font Style** row is the first field (top of CONTENT). `CreateFlagButtons` takes `separatorsBefore`
+  (thin vertical divider before a bit index — used before the case buttons) on top of `exclusiveGroups`.
+- **Every plain number field** (non-`[Range]` float/int) is `SperlichEditorWidgets.CreateDragNumberField`
+  — a 6-dot Painter2D grip left of the input, drag up/down to scrub. `col.Property` routes float/int
+  props here automatically (`PropertyHasRange` keeps `[Range]` fields on Unity's slider). Compact
+  cluster fields use it too.
+- **Outline Placement** = `m_outlineMode` (`TextOutlinePlacement` Inner/Middle/Outer) → shader
+  `_OutlineMode` (0/1/2). Shader shifts the face edge inward by `(2 - _OutlineMode) * 0.5 * _OutlineWidth`
+  so Inner eats into the face, Outer leaves it (default). Enum index → `SetFloat` directly.
+- **Drop Shadow Offset** = `SperlichEditorWidgets.CreateRadialVector2Field(m_shadowOffset, 0.5f)` — a
+  small circular pad + an **Angle field (-180..180°)** and an **Offset field** (no Vector2 on the
+  surface). Angle 0° = right, +90° = up. Still writes the same `Vector2` → `_UnderlayOffset`.
+- `CreateChevronSection(.., persistKey)` — pass a key (editor type name) and the section's open/closed
+  state is stored in `EditorPrefs`, so it survives Undo/Redo rebuilds and domain reloads. Applied via
+  the `Section()` helper in `SperlichTextEditor` / `FontDefinitionEditor`.
+- **Built-in effects list** = hand-built card list (`BuildBuiltinEffectsList` / `BuildEffectCard` /
+  `PopulateEffectParams` in `SperlichTextEditor`), one card per entry: effect dropdown + ✕ + only the
+  fields that effect uses (reshapes on type change). `+ Add Effect` seeds a Wave.
+- `BuiltinEffectParams` gained `Gradient Ramp` (Rainbow / Glitch colour ramp; null = HSV rainbow).
+  `TextEffectStack.BuildRamp` bakes it to a 64-entry `NativeArray<float4>` LUT per `RunEffect`
+  (TempJob, disposed after Complete); `BuiltinEffectJob.SampleRamp` reads it.
+- Effect semantics: **Wave** Frequency = spatial wavelength · **Glow** Speed = fade anim speed,
+  Frequency = A↔B crossfade sharpness · **Rainbow** colour from the ramp, Frequency = spread ·
+  **Glitch** per-letter shake (phase in the hash) + colour from the ramp, Frequency = glitch rate,
+  Speed = colour cycle.
+- **Component-wide bloom**: `m_bloom` / `m_bloomColor` / `m_bloomRadius` / `m_bloomIntensity` on
+  `SperlichText` → `TextMeshBuilder.ComponentBloom` → `EmitComponentBloom` emits one ring-blur quad per
+  glyph (fxMode 2, bloom flag), same shader path as a `<bloom>` span. Own "BLOOM" inspector section.
+  The glyph face is also hot-tinted (`BloomFace`) when it has no per-span bloom of its own. Each bloom
+  quad is registered in `glyphQuadStart/Source/Effect` (source = its glyph, effect = None) so the Burst
+  effect jobs move / pulse / fade it in lockstep with the animated letter.
+- `CreateDragNumberField(prop, sensitivity)` scrubs via **accumulated `deltaPosition`** (not absolute
+  coords — that was the "random / sluggish" bug) with a Unity-style value-relative step.
+- Rainbow / Glitch "Color Ramp" = a directly bound `GradientField` via `RampRow` (a `PropertyField` on
+  a Gradient inside a nested array element renders blank); auto-seeded with `RainbowGradient()` when empty.
+- **Font** field = `SperlichEditorWidgets.CreateAssetDropdown<FontDefinition>` — flat dropdown listing
+  every `FontDefinition` asset in the project (`AssetDatabase.FindAssets`), rescanned on open.
+- EditorKit custom dropdowns now also close when the editor focus leaves the inspector window (click
+  into Scene/Game/Hierarchy view) — `EditorApplication.update` focus watch in `BuildDropdown`.
+- `m_verticalAlign` default is now `Middle` (was `Top`); existing serialised components keep their value.
+- **Align** and **Vertical Align** = Word-processor style icon-button rows (`AlignButtons`, builtin
+  editor icons `align_horizontally_*` / `align_vertically_*`, letter fallback). `Wrap` / `Overflow` =
+  `CreateEnumDropdown`.
+- Markup editor: bordered widget = `ScrollView` (vertical scroller `AlwaysVisible`, wheel
+  `StopPropagation` so it never scrolls the inspector) with a **footer** holding the tag-insert
+  buttons and a square `◢` resize grip (bottom-right, drags `scroll.style.height`, clear of the
+  scrollbar). The text field is a raw bound `TextField` (not `PropertyField`) — a SerializedProperty
+  round-trip is what made it jump to the top on click / tag insert. `InsertTag` appends to
+  `textField.value` directly.
+- The old readability-lint HelpBox was **removed** entirely.
+
+### `Editor/FontDefinitionEditor.cs`
+
+- Sections: FACES · SDF RASTERIZER · FIELD KIND (`CreateSegmentedControl` over `GlyphFieldKind`) ·
+  MTSDF BAKE (hidden unless `fieldKind == MTSDF`).
+- Bake status = badge card: `BAKED` (accent) / `OUT OF DATE` (warn) / `NOT BAKED` / `NO FONT`, plus
+  an accent "Bake / Re-bake MTSDF Atlas" button.
+- "ADVANCED / DIAGNOSTIC" collapsed sub-section holds `msdfEdgeAngle` + the four diagnostic toggles.
+
+### Debug tooling — `Editor/Msdf/MsdfDebugDump.cs`
+
+Menu items under **`Assets/Sperlich Text/Debug/`** (need a `FontDefinition` selected):
+- **Dump Glyph MTSDF PNGs** — bakes `htkx483fgn` one at a time at em 42, writes rgb + alpha PNGs and
+  `dump.txt` (per glyph: `RAWwind`, `[ShapeResolver.LastNote]`, `resolvedContours`, `REwind`, gaps,
+  bounds) to `<project>/MtsdfDebug/`.
+- **Export Baked Atlas PNG** — dumps the live baked atlas rgb/alpha + per-cell crops + a rect-overlap
+  scan to `MtsdfDebug/`.
+- **Dump Resolved GlyphData** — `GlyphStoreRegistry.Acquire` → prewarm → per-glyph resolved rects.
+
+`FontOutlineSource.DebugDescribe(codepoint)` dumps raw glyf structure (contours, on/off-curve
+points).
+
+## Tests (`Tests/`)
+
+Pure-logic suites (no FontEngine/TMP): `ShelfPacker`, `LineBreaker`, `AutoSizeSolver`,
+`MarkupParser`, `CurvedBaseline`. Editor-guarded: `OpenFontLoadTests`, `MsdfRasterizerTests`,
+`MsdfBakeSmokeTests` (needs a Comfortaa asset; asserts every ASCII codepoint bakes, rects in-bounds
++ non-overlapping, channels in [0,1], `emSize == face SamplingPointSize`).
 
 ## Master test string (all implemented tags)
 
 ```
-Normal <b>Fett</b> <i>Kursiv</i> <b><i>Beides</i></b> <weight=light>Light</weight>
-<color=#ff5555>Rot</color> <alpha=#80>halbtransparent</alpha> <mark=#ffee0055>markiert</mark>
-<size=160%>gross</size> normal <size=55%>klein</size> H2O<sub>tief</sub> x<sup>hoch</sup> <cspace=0.35>g e s p e r r t</cspace>
-<u>unterstrichen</u> <s>durchgestrichen</s> <uppercase>uppercase</uppercase> <smallcaps>smallcaps</smallcaps>
-<gradient=#ffee00,#ff2200>vertikal smooth</gradient>
-<gradient=horizontal,#ffffff,#3399ff>horizontal smooth ueber das ganze Wort</gradient>
-<gradient=horizontal,stepped,#ffffff,#3399ff>horizontal stepped</gradient>
-<gradient=perchar,#ff00ff,#00ffff>perchar</gradient>
-<gradient=#ff0000,#00ff00,#0000ff,#ffffff>vier Ecken</gradient>
-<outline=#000000,0.25>Outline</outline> <shadow=#000000cc,0.08,-0.08,0.08>Schatten</shadow> <glow=#ffcc66,0.7,1.6>Glow</glow>
-<outline=#3399ff,0.2><glow=#3399ff,0.6,1.4>Outline plus Glow</glow></outline>
+Normal <b>Fett</b> <i>Kursiv</i> <b><i>Beides</i></b> <weight=light>Light</weight> <b>Fett<i>+Kursiv<color=#ff5555>+Rot<u>+Unterstrich</u></color></i></b>
+<color=#ff5555>Rot</color> <color=#55ff88>Grün</color> <color=#5599ff>Blau</color> <alpha=#80>halbdurchsichtig</alpha> <mark=#ffee0055>markiert</mark>
+<size=160%>groß</size> normal <size=55%>klein</size> H<sub>2</sub>O x<sup>3</sup> <cspace=0.35>g e s p e r r t</cspace>
+<u>unterstrichen</u> <s>durchgestrichen</s> <uppercase>großschrift ß</uppercase> <smallcaps>kapitälchen</smallcaps>
+<gradient=v,#ffee00,#ff2200>vertikal</gradient> <gradient=h,#ffffff,#3399ff>horizontal</gradient> <gradient=h,stepped,#ffffff,#3399ff>stepped</gradient>
+<gradient=perchar,#ff00ff,#00ffff>perchar</gradient> <gradient=perword,#00ffaa,#ffaa00>perword</gradient> <gradient=#ff0000,#00ff00,#0000ff,#ffffff>vier Ecken</gradient>
+<outline=#000000,0.25>Outline</outline> <shadow=#000000cc,0.08,-0.08,0.08>Schatten</shadow> <glow=#ffcc66,0.7,1.6>Glow</glow> <outline=#3399ff,0.2><glow=#3399ff,0.6,1.4>Outline+Glow</glow></outline> <color=#ffe6c0><bloom=#ff8a1e,1.0,2.4>Bloom</bloom></color>
 <wave>Wave</wave> <shake>Shake</shake> <pulse>Pulse</pulse> <rainbow>Rainbow</rainbow> <glitch>Glitch</glitch> <glowpulse>GlowPuls</glowpulse>
-<link="id_a">Klickbarer Link A</link> und <glyph:Jump> <sprite="heart">
-Sonderzeichen: aeoeue AEOEUE ss - "quote" 'single' >>guillemet<< -- dash ... ende
+<wave><color=#ffaa00>Wave farbig</color></wave> <shake><b>Shake fett</b></shake> <pulse><i>Pulse kursiv</i></pulse> <rainbow><u>Rainbow Strich</u></rainbow>
+<link="id_a">Link A</link> und <link="id_b">Link B</link> · Glyph <glyph:Jump> · Sprite <sprite="heart">
+abcdefghijklmnopqrstuvwxyzäöüß   ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÜ   0 1 2 3 4 5 6 7 8 9
+Umlaute/ß: Straße Grüße Öl Übung Ähre Fuß Mädchen schön Käse weißblau groß
+Satzzeichen: . , ; : ! ? … – — · „deutsche Anführung" ‚einfach' »Guillemets« ›einfach‹ (rund) [eckig] {geschweift}
+Symbole: & % @ # * + = / \ | ~ ^ _ € £ $ ¥ © ® ™ § ° µ ½ ¾ × ÷ ± < >
+Fallback-Test (ggf. Tofu): ẞ Ω π ∑ → ✓ ★ 日本語 😀
 ```
+
+Plain-text layout test (no tags) lives in the chat history — long paragraphs, short lines, an
+unbreakable `aaa…` word, whitespace runs.
 
 ## Known deferred limitations (not bugs)
 
-- `<glyph:…>` / `<sprite=…>` reserve a blank box — no `ITextGlyphSource` / sprite-atlas UV resolve
-  wired yet.
-- `<link>` needs the `TextInteraction` component + an input module that sends pointer-move events.
-- Kerning returns 0 (plumbed through layout; wire via `fontAsset.fontFeatureTable`).
-- Glow is alpha-blended, not additive bloom.
-- Typewriter reveal is play-mode only.
-- Multi-line run-gradient restarts per line.
+- **Line Vertical Align per line** (glyph anchor within a mixed-size line: baseline / center / top /
+  bottom) not implemented — needs per-glyph ascent/descent carried into `PositionedGlyph` (currently
+  only in the internal `WorkGlyph`) + a pass in `PlaceVertically`.
+- MTSDF `<glow>` / `<shadow>` spread is hard-capped by the baked `Msdf Glow Padding` — no true
+  unbounded bloom without a separate blur pass. `<bloom>` widens + white-hots within that cap.
+- Component-level whole-label glow (`_GlowPower`) is still field-based (not the ring blur).
+- `ShapeResolver` clean-walk fallback = the unresolved overlapping shape for the pathological few
+  glyphs; those keep faint MSDF seams (alpha channel stays clean).
+- MTSDF has no runtime glyph generation — CJK / emoji / unknown user text need the SDF `fieldKind`.
+- Kerning returns 0 for TMP SDF (plumbed; wire via `fontFeatureTable`). MTSDF kerning plumbed but
+  `MsdfBaker` writes an empty kerning table.
+- `<glyph:…>` / `<sprite=…>` reserve a blank box (no `ITextGlyphSource` / sprite atlas wired).
+- `<link>` needs the `TextInteraction` component + pointer-move events.
+- Typewriter reveal is play-mode only. Multi-line run-gradient restarts per line.
 - `<wave=amp,freq,speed>` custom params not parsed (presets only).
-- One `Schedule().Complete()` per built-in effect (not a single combined pass).
-- TMP owns the dynamic atlas + packing; `enableMultiAtlasSupport:false` → full rebuild on overflow.
 
 ## Rules for this package
 
-- Only edit `.cs` and the `.shader`. Never touch `.unity` / `.prefab` (project rule). Scene/prefab
-  setup steps go to the user as instructions — see the README "Setup in the editor" section.
-- Keep all TMP API contact inside `FontAccess` + `GlyphStore`.
-- Anything time-based must go through `SperlichTextClock` (never `Time.deltaTime` directly).
-- `///` XML doc for types/methods, `//` for inline only, prefer self-documenting names.
-- When a batch is confirmed good, fold its summary into the README table + "Known follow-ups" and
-  trim this "Current state" section down to the confirmed baseline.
+- Only edit `.cs` and `.shader`. Never touch `.unity` / `.prefab` (project rule) — scene setup goes
+  to the user as instructions.
+- Keep all **TMP** API contact inside `FontAccess` + `GlyphStore`. Keep the **msdfgen port**
+  self-contained in `Runtime/Rasterizer/` (own asmdef, no engine-render deps).
+- Anything time-based goes through `SperlichTextClock` (never `Time.deltaTime` directly).
+- Editor UI = UI Toolkit + `Sperlich.EditorKit` widgets (no new IMGUI inspectors).
+- `///` XML doc for types/methods, `//` for inline only.
+- The inner package git repo is `github.com/MrPifo/com.sperlich.text.git` (remote), separate from the
+  outer Unity project repo. Commit/push only when the user asks.
+```

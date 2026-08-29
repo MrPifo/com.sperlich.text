@@ -7,13 +7,12 @@ using UnityEngine.TextCore.LowLevel;
 namespace Sperlich.Text {
 
 	/// <summary>
-	/// Owns the runtime SDF font data for one <see cref="FontDefinition"/>. v1 sources the distance field
-	/// through <see cref="TMP_FontAsset"/> in dynamic mode — that is the only public Unity 6 API that can
-	/// rasterise glyphs to an SDF atlas (raw <c>FontEngine</c> rendering is internal). The msdfgen native
-	/// plugin path from the plan would replace only this class.
-	/// Main-thread only.
+	/// The TMP-backed <see cref="IFontFaceSource"/>: sources the distance field through
+	/// <see cref="TMP_FontAsset"/> in dynamic mode — the only public Unity 6 API that can rasterise
+	/// glyphs to an SDF atlas (raw <c>FontEngine</c> rendering is internal). All TMP contact in the
+	/// package lives here and in <see cref="GlyphStore"/>. Main-thread only.
 	/// </summary>
-	public sealed class FontAccess {
+	public sealed class FontAccess : IFontFaceSource {
 
 		private readonly FontDefinition definition;
 		private readonly List<TMP_FontAsset> assets = new();
@@ -23,11 +22,20 @@ namespace Sperlich.Text {
 		public FontDefinition Definition => definition;
 		public int FaceCount => assets.Count;
 		public bool IsReady => assets.Count > 0 && assets[0] != null;
+		public bool SupportsDynamicGeneration => true;
+		public GlyphFieldKind FieldKind => definition.fieldKind;
 
-		public TMP_FontAsset Primary => assets.Count > 0 ? assets[0] : null;
+		private TMP_FontAsset Primary => assets.Count > 0 ? assets[0] : null;
 		public Texture AtlasTexture => Primary != null ? Primary.atlasTexture : null;
 		public int AtlasSize => Primary != null ? Primary.atlasWidth : definition.atlasSize;
-		public int Padding => Primary != null ? Primary.atlasPadding : definition.sdfPadding;
+		private int Padding => Primary != null ? Primary.atlasPadding : definition.sdfPadding;
+
+		/// <summary>
+		/// Matches TMP's dynamic-SDF <c>gradientScale = atlasPadding + 1</c>. Sourcing it here (rather
+		/// than a bare <c>Padding</c>) keeps the mesh builder backend-agnostic; without the <c>+ 1</c>
+		/// the screen-space AA band comes out ~10% too wide.
+		/// </summary>
+		public float DistanceRange => Padding + 1f;
 
 		public FontAccess(FontDefinition definition) {
 			this.definition = definition;
@@ -101,11 +109,8 @@ namespace Sperlich.Text {
 
 		public FaceMetrics PrimaryMetrics => GetMetrics(0);
 
-		/// <summary>
-		/// Looks up an already-present character across the chain. Returns false when it is not in any
-		/// atlas yet (caller queues it via <see cref="TryAddCharacters"/>).
-		/// </summary>
-		public bool TryGetCharacter(uint unicode, out int faceIndex, out TMP_Character character) {
+		/// <summary>Looks up an already-present character across the chain.</summary>
+		private bool TryGetCharacter(uint unicode, out int faceIndex, out TMP_Character character) {
 			for (int i = 0; i < assets.Count; i++) {
 				if (assets[i] != null && assets[i].characterLookupTable.TryGetValue(unicode, out character)) {
 					faceIndex = i;
@@ -117,15 +122,37 @@ namespace Sperlich.Text {
 			return false;
 		}
 
-		/// <summary>Adds a batch of code points to the primary atlas (dynamic SDF generation).</summary>
-		public bool TryAddCharacters(uint[] unicodes) {
-			if (Primary == null || unicodes == null || unicodes.Length == 0) return false;
-			return Primary.TryAddCharacters(unicodes, out _, includeFontFeatures: false);
+		/// <summary>Resolves a present code point into the backend-agnostic <see cref="GlyphEntry"/>.</summary>
+		public bool TryGetGlyph(uint unicode, out GlyphEntry entry) {
+			if (TryGetCharacter(unicode, out int faceIndex, out TMP_Character ch)) {
+				Glyph g = ch.glyph;
+				GlyphMetrics m = g.metrics;
+				GlyphRect r = g.glyphRect;
+				float pad = Padding;
+				entry = new GlyphEntry {
+					FaceIndex = faceIndex,
+					GlyphIndex = g.index,
+					Advance = m.horizontalAdvance,
+					Width = m.width,
+					Height = m.height,
+					BearingX = m.horizontalBearingX,
+					BearingY = m.horizontalBearingY,
+					RectX = r.x - pad,
+					RectY = r.y - pad,
+					RectW = r.width + pad * 2f,
+					RectH = r.height + pad * 2f,
+					Padding = pad
+				};
+				return true;
+			}
+			entry = default;
+			return false;
 		}
 
-		/// <summary>True when the primary atlas is out of room for the last add.</summary>
-		public bool AtlasLikelyFull(uint unicode) {
-			return Primary != null && Primary.characterLookupTable.ContainsKey(unicode) == false;
+		/// <summary>Adds a batch of code points to the primary atlas (dynamic SDF generation).</summary>
+		public bool TryAddGlyphs(uint[] unicodes) {
+			if (Primary == null || unicodes == null || unicodes.Length == 0) return false;
+			return Primary.TryAddCharacters(unicodes, out _, includeFontFeatures: false);
 		}
 
 		/// <summary>Kerning advance in sampling-point-size units. v1: 0 (see README "Kerning").</summary>

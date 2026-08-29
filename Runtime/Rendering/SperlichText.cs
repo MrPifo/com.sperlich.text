@@ -20,43 +20,55 @@ namespace Sperlich.Text {
 		[SerializeField] private FontDefinition m_font;
 		[SerializeField] private float m_fontSize = 32f;
 		[SerializeField] private bool m_richText = true;
+		[SerializeField] private TextFontStyle m_fontStyle = TextFontStyle.None;
 
 		[SerializeField] private TextAlign m_align = TextAlign.Left;
-		[SerializeField] private TextVerticalAlign m_verticalAlign = TextVerticalAlign.Top;
-		[SerializeField] private TextWrap m_wrap = TextWrap.Word;
+		[SerializeField] private TextVerticalAlign m_verticalAlign = TextVerticalAlign.Middle;
+		[SerializeField] private TextWrap m_wrap = TextWrap.WordThenChar;
 		[SerializeField] private TextOverflow m_overflow = TextOverflow.Overflow;
+
+		// Inner padding between the RectTransform and the text box, in local units (like TMP's Margins).
+		[SerializeField] private float m_marginLeft = 0f;
+		[SerializeField] private float m_marginRight = 0f;
+		[SerializeField] private float m_marginTop = 0f;
+		[SerializeField] private float m_marginBottom = 0f;
 
 		[SerializeField] private bool m_autoSize;
 		[SerializeField] private float m_autoSizeMin = 8f;
 		[SerializeField] private float m_autoSizeMax = 72f;
 
-		[SerializeField] private float m_lineSpacing = 1f;
-		[SerializeField] private float m_paragraphSpacing = 1f;
-		[SerializeField] private float m_extraTrackingEm = 0f;
+		[SerializeField] private float m_lineSpacing = 0f;      // "Line Height": extra leading as a fraction of the natural line box (0 = single)
+		[SerializeField] private float m_paragraphSpacing = 0f; // "Paragraph Spacing": extra gap after a hard line break, in font-size units
+		[SerializeField] private float m_extraTrackingEm = 0f;  // "Character Spacing": em added between every glyph
+		[SerializeField] private float m_wordSpacingEm = 0f;    // "Word Spacing": em added on top of every space
 
 		[SerializeField] private List<BuiltinEffectParams> m_builtinEffects = new();
 
 		[SerializeField] private bool m_typewriter;
 		[SerializeField] private RevealController m_reveal = new();
 
-		[Header("Face / SDF")]
+		// Face / Outline / Drop Shadow / Glow — grouped by the custom inspector's collapsible sections.
 		[SerializeField, Range(-0.5f, 0.5f)] private float m_faceDilate = 0f;
 		[SerializeField, Range(0f, 2f)] private float m_sharpness = 1f;
 
-		[Header("Outline (whole label)")]
 		[SerializeField] private Color m_outlineColor = Color.black;
 		[SerializeField, Range(0f, 0.5f)] private float m_outlineWidth = 0f;
+		[SerializeField] private TextOutlinePlacement m_outlineMode = TextOutlinePlacement.Outer; // enum index 2
 
-		[Header("Drop Shadow (whole label)")]
 		[SerializeField] private Color m_shadowColor = new Color(0f, 0f, 0f, 0.5f);
 		[SerializeField] private Vector2 m_shadowOffset = new Vector2(0.05f, -0.05f);
 		[SerializeField, Range(0f, 0.5f)] private float m_shadowSoftness = 0.05f;
 		[SerializeField, Range(-0.5f, 0.5f)] private float m_shadowDilate = 0f;
 
-		[Header("Glow (whole label)")]
 		[SerializeField] private Color m_glowColor = new Color(0.3f, 0.6f, 1f, 1f);
 		[SerializeField, Range(0f, 1f)] private float m_glowPower = 0f;
 		[SerializeField, Range(0f, 0.5f)] private float m_glowOuter = 0.25f;
+
+		// Component-wide bloom: the per-glyph ring-blur (same path as the <bloom> tag) for the whole label.
+		[SerializeField] private bool m_bloom;
+		[SerializeField] private Color m_bloomColor = new Color(1f, 0.55f, 0.2f, 1f);
+		[SerializeField, Range(0f, 1f)] private float m_bloomRadius = 1f;
+		[SerializeField, Range(0f, 4f)] private float m_bloomIntensity = 2f;
 
 		private GlyphStore store;
 		private FontDefinition boundFont;
@@ -97,8 +109,31 @@ namespace Sperlich.Text {
 		}
 
 		public TextAlign Align { get => m_align; set { m_align = value; layoutDirty = true; SetVerticesDirty(); } }
+		public TextVerticalAlign VerticalAlign { get => m_verticalAlign; set { m_verticalAlign = value; layoutDirty = true; SetVerticesDirty(); } }
 		public TextOverflow Overflow { get => m_overflow; set { m_overflow = value; layoutDirty = true; SetVerticesDirty(); } }
 		public TextWrap Wrap { get => m_wrap; set { m_wrap = value; layoutDirty = true; SetVerticesDirty(); } }
+
+		/// <summary>Whole-label style flags (bold / italic / underline / strikethrough / case), like TMP's "Font Style".</summary>
+		public TextFontStyle FontStyle {
+			get => m_fontStyle;
+			set { if (m_fontStyle != value) { m_fontStyle = value; textDirty = layoutDirty = true; SetVerticesDirty(); } }
+		}
+
+		/// <summary>Whole-label bloom (per-glyph ring blur, like the <c>&lt;bloom&gt;</c> tag applied to everything).</summary>
+		public bool Bloom {
+			get => m_bloom;
+			set { if (m_bloom != value) { m_bloom = value; SetVerticesDirty(); } }
+		}
+
+		/// <summary>Inner padding (left, right, top, bottom) between the RectTransform and the text box, in local units.</summary>
+		public Vector4 Margins {
+			get => new Vector4(m_marginLeft, m_marginRight, m_marginTop, m_marginBottom);
+			set {
+				m_marginLeft = value.x; m_marginRight = value.y; m_marginTop = value.z; m_marginBottom = value.w;
+				layoutDirty = true;
+				SetVerticesDirty();
+			}
+		}
 
 		public TextEffectStack Effects => effects;
 		public RevealController Reveal => m_reveal;
@@ -207,11 +242,34 @@ namespace Sperlich.Text {
 		protected override void OnEnable() {
 			base.OnEnable();
 			meshBuilder ??= new TextMeshBuilder();
+			EnsureCanvasShaderChannels();
 			RebindFont();
 			textDirty = layoutDirty = true;
 			SyncBuiltinEffects();
 			RestartReveal();
 			SetAllDirty();
+		}
+
+		protected override void OnCanvasHierarchyChanged() {
+			base.OnCanvasHierarchyChanged();
+			EnsureCanvasShaderChannels();
+		}
+
+		/// <summary>
+		/// uGUI only feeds <c>TEXCOORD1</c> (and normals/tangents) to the shader when the owning
+		/// <see cref="Canvas"/> asks for it. Our SDF shader packs the per-tag FX mode + widths into
+		/// <c>uv1</c>; without this the fragment stage reads garbage there, which trips the outline/glow
+		/// branch (solid-colour blocks) and the shadow-copy softness path (blurred glyphs).
+		/// </summary>
+		private void EnsureCanvasShaderChannels() {
+			Canvas c = canvas;
+			if (c == null) return;
+			const AdditionalCanvasShaderChannels need =
+				AdditionalCanvasShaderChannels.TexCoord1 |
+				AdditionalCanvasShaderChannels.Normal |
+				AdditionalCanvasShaderChannels.Tangent;
+			if ((c.additionalShaderChannels & need) != need)
+				c.additionalShaderChannels |= need;
 		}
 
 		protected override void OnDisable() {
@@ -306,8 +364,8 @@ namespace Sperlich.Text {
 
 			string perGlyph = "";
 			if (store != null && layout != null && meshBuilder != null) {
-				originOffset = new float2(rectTransform.rect.xMin, rectTransform.rect.yMax);
-				meshBuilder.Build(layout, store, markup.Spans, new Vector2(originOffset.x, originOffset.y), color, editingRects);
+				originOffset = ContentOrigin();
+				meshBuilder.Build(layout, store, markup.Spans, new Vector2(originOffset.x, originOffset.y), color, editingRects, BuildBloom());
 				int shown = 0;
 				for (int i = 0; i < layout.Glyphs.Count && shown < 4; i++) {
 					PositionedGlyph g = layout.Glyphs[i];
@@ -324,7 +382,7 @@ namespace Sperlich.Text {
 				$"  store           : {(store != null ? "acquired" : "NULL")}\n" +
 				$"  face ready      : {(store != null && store.Fonts.IsReady)}\n" +
 				$"  atlas texture   : {(store != null && store.AtlasTexture != null ? $"{store.AtlasTexture.width}x{store.AtlasTexture.height}" : "<null>")}\n" +
-				$"  atlas size/pad  : {(store != null ? $"{store.AtlasSize} / {store.Padding}" : "-")}\n" +
+				$"  atlas size/range: {(store != null ? $"{store.AtlasSize} / {store.DistanceRange}" : "-")}\n" +
 				$"  pending glyphs  : {(store != null ? store.PendingCount : 0)}\n" +
 				$"  markup text len : {(markup.Text != null ? markup.Text.Length : 0)}\n" +
 				$"  layout glyphs   : {(layout != null ? layout.Glyphs.Count : 0)}, unresolved={(layout != null && layout.HasUnresolvedGlyphs)}\n" +
@@ -364,6 +422,7 @@ namespace Sperlich.Text {
 		/// <summary>Standard uGUI vertex path: run the pipeline, then copy into the VertexHelper.</summary>
 		protected override void OnPopulateMesh(VertexHelper vh) {
 			vh.Clear();
+			EnsureCanvasShaderChannels();
 			EnsureStore();
 			if (store == null || meshBuilder == null) return;
 
@@ -371,8 +430,8 @@ namespace Sperlich.Text {
 			if (layoutDirty || layout == null) { RunLayout(); layoutDirty = false; }
 			if (layout == null || layout.Glyphs.Count == 0) return;
 
-			originOffset = new float2(rectTransform.rect.xMin, rectTransform.rect.yMax);
-			meshBuilder.Build(layout, store, markup.Spans, new Vector2(originOffset.x, originOffset.y), color, editingRects);
+			originOffset = ContentOrigin();
+			meshBuilder.Build(layout, store, markup.Spans, new Vector2(originOffset.x, originOffset.y), color, editingRects, BuildBloom());
 
 			if (effects.HasWork || meshBuilder.HasSpanEffects) {
 				effects.Apply(meshBuilder,
@@ -412,6 +471,7 @@ namespace Sperlich.Text {
 			runtimeMaterial.SetFloat("_Sharpness", m_sharpness);
 			runtimeMaterial.SetColor("_OutlineColor", m_outlineColor);
 			runtimeMaterial.SetFloat("_OutlineWidth", m_outlineWidth);
+			runtimeMaterial.SetFloat("_OutlineMode", (float)(int)m_outlineMode);
 			runtimeMaterial.SetColor("_UnderlayColor", m_shadowColor);
 			runtimeMaterial.SetVector("_UnderlayOffset",
 				new Vector4(m_shadowOffset.x, m_shadowOffset.y, Mathf.Max(0.0001f, m_shadowSoftness), 0f));
@@ -419,6 +479,13 @@ namespace Sperlich.Text {
 			runtimeMaterial.SetColor("_GlowColor", m_glowColor);
 			runtimeMaterial.SetFloat("_GlowPower", m_glowPower);
 			runtimeMaterial.SetFloat("_GlowOuter", m_glowOuter);
+
+			// MTSDF sampling is a shader keyword: only when the bound font asks for it AND the store's
+			// backend actually serves an MTSDF atlas (a fell-back FontAccess still reports SDF).
+			bool mtsdf = boundFont != null && boundFont.fieldKind == GlyphFieldKind.MTSDF
+				&& store != null && store.Fonts.FieldKind == GlyphFieldKind.MTSDF;
+			if (mtsdf) runtimeMaterial.EnableKeyword("SPERLICH_MTSDF");
+			else runtimeMaterial.DisableKeyword("SPERLICH_MTSDF");
 		}
 
 		private void EnsureStore() {
@@ -439,11 +506,16 @@ namespace Sperlich.Text {
 				store.PrewarmAscii();
 			}
 			if (store != null && store.Fonts.IsReady == false) {
-				Debug.LogWarning($"[SperlichText] Font definition '{boundFont.name}' produced no usable face. " +
-					"Check that 'primary' is an imported dynamic Font and that TMP Essential Resources are imported " +
-					"(Window > TextMeshPro > Import TMP Essential Resources).", this);
+				if (boundFont.fieldKind == GlyphFieldKind.MTSDF)
+					Debug.LogWarning($"[SperlichText] Font definition '{boundFont.name}' is set to MTSDF but has no usable " +
+						"baked atlas. Select the FontDefinition and press 'Bake MTSDF Atlas'.", this);
+				else
+					Debug.LogWarning($"[SperlichText] Font definition '{boundFont.name}' produced no usable face. " +
+						"Check that 'primary' is an imported dynamic Font and that TMP Essential Resources are imported " +
+						"(Window > TextMeshPro > Import TMP Essential Resources).", this);
 			}
 			lastStoreVersion = -1;
+			PushMaterialProps();
 			SetMaterialDirty();
 		}
 
@@ -454,7 +526,41 @@ namespace Sperlich.Text {
 		}
 
 		private void EnsureMarkup() {
-			markup = parser.Parse(m_text ?? string.Empty, m_richText);
+			markup = parser.Parse(m_text ?? string.Empty, m_richText, BuildBaseStyle());
+		}
+
+		/// <summary>Seeds the parser with the component-level "Font Style" flags so they cover the whole label.</summary>
+		private StyleState BuildBaseStyle() {
+			StyleState s = StyleState.Default;
+			if ((m_fontStyle & TextFontStyle.Bold) != 0) s.Synthesis |= FontSynthesis.Bold;
+			if ((m_fontStyle & TextFontStyle.Italic) != 0) s.Synthesis |= FontSynthesis.Italic;
+			if ((m_fontStyle & TextFontStyle.Underline) != 0) s.Underline = true;
+			if ((m_fontStyle & TextFontStyle.Strikethrough) != 0) s.Strikethrough = true;
+			if ((m_fontStyle & TextFontStyle.SmallCaps) != 0) s.Case = TextCase.SmallCaps;
+			else if ((m_fontStyle & TextFontStyle.Uppercase) != 0) s.Case = TextCase.Upper;
+			else if ((m_fontStyle & TextFontStyle.Lowercase) != 0) s.Case = TextCase.Lower;
+			return s;
+		}
+
+		private TextMeshBuilder.ComponentBloom BuildBloom() {
+			if (m_bloom == false) return default;
+			return new TextMeshBuilder.ComponentBloom {
+				Enabled = true,
+				Color = new float4(m_bloomColor.r, m_bloomColor.g, m_bloomColor.b, m_bloomColor.a),
+				Radius = Mathf.Clamp01(m_bloomRadius),
+				Intensity = Mathf.Max(0f, m_bloomIntensity)
+			};
+		}
+
+		/// <summary>Layout-box size after subtracting the margins from the RectTransform rect (never negative).</summary>
+		private Vector2 ContentRectSize(Vector2 full) => new Vector2(
+			Mathf.Max(0f, full.x - m_marginLeft - m_marginRight),
+			Mathf.Max(0f, full.y - m_marginTop - m_marginBottom));
+
+		/// <summary>Top-left origin of the text box (RectTransform top-left shifted in by the left/top margin).</summary>
+		private float2 ContentOrigin() {
+			Rect r = rectTransform.rect;
+			return new float2(r.xMin + m_marginLeft, r.yMax - m_marginTop);
 		}
 
 		private void RunLayout() {
@@ -462,7 +568,7 @@ namespace Sperlich.Text {
 			if (store == null) { layout = null; return; }
 			if (markup.Spans == null) EnsureMarkup();
 
-			Vector2 rect = rectTransform.rect.size;
+			Vector2 rect = ContentRectSize(rectTransform.rect.size);
 			float size = m_fontSize;
 
 			if (m_autoSize || m_overflow == TextOverflow.ScaleToFit) {
@@ -499,6 +605,7 @@ namespace Sperlich.Text {
 				LineSpacingMul = m_lineSpacing,
 				ParagraphSpacingMul = m_paragraphSpacing,
 				ExtraTrackingEm = m_extraTrackingEm,
+				WordSpacingEm = m_wordSpacingEm,
 				AutoUppercaseTracking = true,
 				Curve = curve
 			};

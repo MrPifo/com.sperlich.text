@@ -24,7 +24,17 @@ namespace Sperlich.Text {
 				return e.Store;
 			}
 
-			FontAccess access = new FontAccess(font);
+			IFontFaceSource access;
+			if (font.fieldKind == GlyphFieldKind.MTSDF && font.HasBakedData) {
+				access = new MsdfFontFaceSource(font);
+			} else {
+				if (font.fieldKind == GlyphFieldKind.MTSDF) {
+					UnityEngine.Debug.LogWarning(
+						$"[SperlichText] FontDefinition '{font.name}' is set to MTSDF but has no baked atlas. " +
+						"Falling back to the SDF path — select it and press 'Bake MTSDF Atlas'.", font);
+				}
+				access = new FontAccess(font);
+			}
 			GlyphStore store = new GlyphStore(access);
 
 			stores[font] = new Entry { Store = store, RefCount = 1 };

@@ -10,6 +10,7 @@ Shader "Sperlich/Text SDF"
 
         _OutlineColor ("Outline Color", Color) = (0,0,0,1)
         _OutlineWidth ("Outline Width", Range(0,0.5)) = 0.0
+        [Enum(Inner,0,Middle,1,Outer,2)] _OutlineMode ("Outline Placement", Float) = 2.0
 
         _UnderlayColor ("Shadow Color", Color) = (0,0,0,0.5)
         _UnderlayOffset ("Shadow Offset (xy) / Softness (z)", Vector) = (0,0,0.05,0)
@@ -61,9 +62,10 @@ Shader "Sperlich/Text SDF"
         CGPROGRAM
             #pragma vertex vert
             #pragma fragment frag
-            #pragma target 2.0
+            #pragma target 3.0
             #pragma multi_compile_local _ UNITY_UI_CLIP_RECT
             #pragma multi_compile_local _ UNITY_UI_ALPHACLIP
+            #pragma multi_compile_local _ SPERLICH_MTSDF
 
             #include "UnityCG.cginc"
             #include "UnityUI.cginc"
@@ -86,6 +88,7 @@ Shader "Sperlich/Text SDF"
                 float4 uv0       : TEXCOORD0;
                 float4 worldPos  : TEXCOORD1;
                 float4 uv1       : TEXCOORD2;
+                float4 cellRect  : TEXCOORD3; // per-tag glow: (u0,v0,u1,v1) of this glyph's atlas cell
                 UNITY_VERTEX_OUTPUT_STEREO
             };
 
@@ -97,6 +100,7 @@ Shader "Sperlich/Text SDF"
             float _Sharpness;
             fixed4 _OutlineColor;
             float _OutlineWidth;
+            float _OutlineMode; // 0 = Inner, 1 = Middle, 2 = Outer
             fixed4 _UnderlayColor;
             float4 _UnderlayOffset;
             float _UnderlayDilate;
@@ -114,20 +118,28 @@ Shader "Sperlich/Text SDF"
                 o.vertex = UnityObjectToClipPos(v.vertex);
                 o.uv0 = float4(TRANSFORM_TEX(v.uv0.xy, _MainTex), v.uv0.z, v.uv0.w);
                 o.uv1 = v.uv1;
+                o.cellRect = v.tangent;
                 o.color = v.color * _Color;
                 return o;
             }
 
-            // raw-SDF distance -> coverage, anti-aliased in screen space.
-            // screenPxRange (from uv0.z, = TextMeshBuilder's sdfScale) is the screen-pixel length
-            // of half the SDF padding spread, so 2*screenPxRange is the screen-pixel length of one
-            // raw-SDF unit. No derivatives: does not depend on fwidth being reliable (it is not on
-            // every GPU / shader target), which is what made the text look blurry.
+            // median of the 3 MTSDF colour channels = the reconstructed shape field, which keeps
+            // sharp corners a single-channel SDF rounds off.
+            float median3(float3 c) { return max(min(c.r, c.g), min(max(c.r, c.g), c.b)); }
+
+            // raw-SDF value -> coverage, anti-aliased in screen space via screen-space derivatives.
+            // `dist` is (sampled_field - 0.5 + dilate + bias); `threshold` shifts the edge outward
+            // for the outline bands. fwidth(dist) is the per-screen-pixel change of the field at this
+            // fragment, so (dist - threshold) / fwidth(dist) is the signed distance to that edge in
+            // screen pixels -> a ~1 px AA band at ANY glyph size, with no dependency on a per-vertex
+            // scale (uGUI does not reliably deliver uv0.z/.w to the fragment stage). `screenPxRange`
+            // is kept in the signature but unused; `sharpen` (1 = natural) tightens/loosens the band.
             float coverage(float dist, float threshold, float screenPxRange, float sharpen)
             {
-                float px = (dist - threshold) * (2.0 * max(screenPxRange, 1e-4));
-                float aa = max(1e-4, 2.0 - sharpen); // ~1 px edge at sharpen=1, hard at 2, soft at 0
-                return saturate(px / aa + 0.5);
+                float w = max(fwidth(dist), 1e-5);
+                float px = (dist - threshold) / w;
+                float sharpMul = max(0.15, sharpen);
+                return saturate(px * sharpMul + 0.5);
             }
 
             fixed4 frag(v2f i) : SV_Target
@@ -145,8 +157,19 @@ Shader "Sperlich/Text SDF"
                     return solid;
                 }
 
-                float sd = tex2D(_MainTex, i.uv0.xy).a; // 0..1, 0.5 = edge
-                float d = sd - 0.5 + _FaceDilate * 0.5 + i.uv0.w; // weight bias from vertex
+                float4 fieldTex = tex2D(_MainTex, i.uv0.xy);
+                #ifdef SPERLICH_MTSDF
+                float sd     = median3(fieldTex.rgb); // multi-channel median: sharp corners, 0.5 = edge
+                float sdSoft = fieldTex.a;            // true SDF: smooth, valid far from the edge
+                #else
+                float sd     = fieldTex.a; // single-channel SDF, 0..1, 0.5 = edge
+                float sdSoft = fieldTex.a;
+                #endif
+                float d     = sd     - 0.5 + _FaceDilate * 0.5 + i.uv0.w; // face field (sharp corners)
+                float dSoft = sdSoft - 0.5 + _FaceDilate * 0.5 + i.uv0.w; // outline / glow / shadow field
+                // Alpha the field can still express once fully outside the shape (it clamps there). The
+                // glow falloffs subtract this so the flat clamped region reads as zero, not a faint box.
+                float dFloor = -0.5 + _FaceDilate * 0.5 + i.uv0.w;
 
                 float fxMode = i.uv1.x;   // 0 = face ; 1 = per-tag outline ; 2 = per-tag glow
 
@@ -155,7 +178,7 @@ Shader "Sperlich/Text SDF"
                 {
                     float ow = i.uv1.y;
                     fixed4 oc = i.color;
-                    oc.a *= coverage(d, -ow, i.uv0.z, _Sharpness);
+                    oc.a *= coverage(dSoft, -ow, i.uv0.z, _Sharpness);
                     #ifdef UNITY_UI_CLIP_RECT
                     oc.a *= UnityGet2DClipping(i.worldPos.xy, _ClipRect);
                     #endif
@@ -165,15 +188,47 @@ Shader "Sperlich/Text SDF"
                     return oc;
                 }
 
-                // per-tag glow: soft radial-ish falloff from the glyph edge outward
+                // per-tag glow: a ring blur of the glyph coverage, spreading into the transparent
+                // padding baked around the cell (Msdf Glow Padding). i.uv1.y = blur radius in UV units,
+                // i.uv1.z = intensity, i.cellRect = (u0,v0,u1,v1) of this glyph's cell so taps that reach
+                // past it fold back onto its transparent border instead of a neighbour glyph.
                 if (fxMode > 1.5)
                 {
-                    float gr = max(i.uv1.y, 1e-4);
-                    float gi = i.uv1.z;
-                    float t = saturate(1.0 + d / gr);       // 0 far outside .. 1 at/inside the edge
-                    float a = pow(t, 2.5) * gi;
+                    float radUv = max(i.uv1.y, 1e-5);
+                    float gi    = i.uv1.z;
+                    float4 cr   = i.cellRect;
+                    bool  bloom = i.uv1.w > 0.5;
+
+                    // Two rings of 8 taps. bloom spreads the outer ring further out and weights it
+                    // heavier for a wide soft skirt. Each tap is glyph coverage, clamped into this cell.
+                    float outer = bloom ? 1.35 : 1.0;
+                    float falloff = bloom ? 1.1 : 2.3;
+                    float acc = 0.0, wsum = 0.0;
+                    [unroll] for (int k = 0; k < 16; k++)
+                    {
+                        float rr   = (k < 8) ? 0.5 : outer;
+                        float ang  = (k - (k < 8 ? 0.0 : 8.0)) * 0.78539816; // 45° steps
+                        float2 off = float2(cos(ang), sin(ang)) * radUv * rr;
+                        float2 uv  = clamp(i.uv0.xy + off, cr.xy, cr.zw);
+                        float samp = tex2D(_MainTex, uv).a;          // true SDF / SDF alpha: 0.5 = edge
+                        float cov  = smoothstep(0.42, 0.58, samp);
+                        float wt   = exp(-falloff * rr * rr);
+                        acc += cov * wt; wsum += wt;
+                    }
+                    float halo = acc / max(wsum, 1e-4);
+
                     fixed4 gc = i.color;
-                    gc.a *= saturate(a);
+                    if (bloom)
+                    {
+                        // blown-out neon: wide soft skirt, and a white-hot core where coverage is densest
+                        float lift = 1.0 - pow(1.0 - saturate(halo), 1.7);
+                        gc.rgb = lerp(gc.rgb, float3(1.0, 1.0, 1.0), saturate((halo - 0.55) * 2.4));
+                        gc.a  *= saturate(lift * gi);
+                    }
+                    else
+                    {
+                        gc.a *= saturate((1.0 - pow(1.0 - saturate(halo), 2.2)) * gi);
+                    }
                     #ifdef UNITY_UI_CLIP_RECT
                     gc.a *= UnityGet2DClipping(i.worldPos.xy, _ClipRect);
                     #endif
@@ -183,29 +238,41 @@ Shader "Sperlich/Text SDF"
                     return gc;
                 }
 
-                float faceA = coverage(d, 0.0, i.uv0.z, _Sharpness);
+                // component-level outline as two solid-colour layers (fill composited over outline), so the
+                // outline area stays EXACTLY _OutlineColor and the fill stays exactly i.color — only the ~1px
+                // AA seam between them blends. _OutlineMode positions the band relative to the glyph edge
+                // (positive = inside the glyph):  Outer (2) [-W,0] · Middle (1) [-W/2,+W/2] · Inner (0) [0,+W].
+                float ow      = _OutlineWidth;
+                float bandIn  = (ow > 0.0) ? ((2.0 - _OutlineMode) * 0.5 * ow) : 0.0; // where the fill starts
+                float bandOut = bandIn - ow;                                          // outer edge of the outline
+
+                float faceA = coverage(d, bandIn, i.uv0.z, _Sharpness);
                 bool realGlyph = (i.uv1.y <= 0.001); // per-tag shadow copies carry a softness in uv1.y
-                if (!realGlyph) faceA = saturate(d / i.uv1.y + 0.5); // soft edge for the per-tag shadow copy
+                if (!realGlyph) faceA = saturate(dSoft / i.uv1.y + 0.5); // soft edge for the per-tag shadow copy
                 fixed4 col = i.color;
                 col.a *= faceA;
 
-                // component-level outline: band just outside the face edge (real glyph only)
-                if (realGlyph && _OutlineWidth > 0.0)
+                if (realGlyph && ow > 0.0)
                 {
-                    float outlineA = coverage(d, -_OutlineWidth, i.uv0.z, _Sharpness);
-                    fixed4 o = _OutlineColor;
-                    o.a *= outlineA;
-                    col = lerp(o, col, faceA);
-                    col.a = max(col.a, o.a);
+                    float aFill = col.a; // fill coverage * fill alpha
+                    float aOut  = coverage(dSoft, bandOut, i.uv0.z, _Sharpness) * _OutlineColor.a;
+                    float outA  = aFill + aOut * (1.0 - aFill);
+                    col.rgb = (col.rgb * aFill + _OutlineColor.rgb * aOut * (1.0 - aFill)) / max(outA, 1e-5);
+                    col.a   = outA;
                 }
 
                 // component-level glow: soft falloff beyond the outline (real glyph only)
                 if (realGlyph && _GlowPower > 0.0)
                 {
-                    float g = 1.0 - saturate((-d) / max(_GlowOuter, 1e-4));
-                    g = pow(saturate(g), 2.0) * _GlowPower;
+                    float go  = max(_GlowOuter, 1e-4);
+                    float g   = 1.0 - saturate((-dSoft)  / go);
+                    float gp  = 1.0 - saturate((-dFloor) / go); // pedestal where the field has clamped
+                    g = saturate((g - gp) / max(1e-4, 1.0 - gp));
+                    g = pow(saturate(g), 1.6) * _GlowPower;
                     fixed4 glow = _GlowColor;
-                    glow.a *= g * (1.0 - faceA);
+                    // gate by the composited coverage (fill + outline), not the fill alone — otherwise an
+                    // Inner/Middle outline lets the glow bleed into the glyph interior and muddies the colour.
+                    glow.a *= g * (1.0 - col.a);
                     col.rgb = lerp(col.rgb, glow.rgb, saturate(glow.a));
                     col.a = max(col.a, glow.a);
                 }

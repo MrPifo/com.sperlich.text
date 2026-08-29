@@ -10,16 +10,19 @@ namespace Sperlich.Text {
 	public struct BuiltinEffectParams {
 		public BuiltinEffect Effect;
 		public float Amplitude;   // px for spatial effects, unit-less for others
-		public float Frequency;   // waves per glyph (spatial) / cycles per second (temporal)
-		public float Speed;       // scroll speed along the string
+		public float Frequency;   // Wave: spatial wavelength · Glow: A<->B crossfade sharpness · Glitch/Rainbow: spread
+		public float Speed;       // temporal speed (Glow: fade animation speed · Glitch: colour cycle)
 		public UnityEngine.Color ColorA;
 		public UnityEngine.Color ColorB;
+
+		/// <summary>Colour ramp for Rainbow / Glitch. <c>null</c> (or empty) = built-in HSV rainbow.</summary>
+		public UnityEngine.Gradient Ramp;
 
 		public static BuiltinEffectParams Wave => new BuiltinEffectParams { Effect = BuiltinEffect.Wave, Amplitude = 6f, Frequency = 0.35f, Speed = 6f };
 		public static BuiltinEffectParams Shake => new BuiltinEffectParams { Effect = BuiltinEffect.Shake, Amplitude = 2.5f, Frequency = 30f, Speed = 1f };
 		public static BuiltinEffectParams Pulse => new BuiltinEffectParams { Effect = BuiltinEffect.Pulse, Amplitude = 0.12f, Frequency = 2f, Speed = 4f };
 		public static BuiltinEffectParams Rainbow => new BuiltinEffectParams { Effect = BuiltinEffect.Rainbow, Amplitude = 1f, Frequency = 0.08f, Speed = 1.5f };
-		public static BuiltinEffectParams Glow => new BuiltinEffectParams { Effect = BuiltinEffect.Glow, Amplitude = 0.4f, Frequency = 1.5f, Speed = 1f, ColorA = new UnityEngine.Color(0.55f, 0.55f, 0.55f, 1f), ColorB = UnityEngine.Color.white };
+		public static BuiltinEffectParams Glow => new BuiltinEffectParams { Effect = BuiltinEffect.Glow, Amplitude = 0.4f, Frequency = 3f, Speed = 1.5f, ColorA = new UnityEngine.Color(0.55f, 0.55f, 0.55f, 1f), ColorB = UnityEngine.Color.white };
 		public static BuiltinEffectParams Glitch => new BuiltinEffectParams { Effect = BuiltinEffect.Glitch, Amplitude = 3f, Frequency = 12f, Speed = 1f };
 	}
 
@@ -48,6 +51,10 @@ namespace Sperlich.Text {
 		public float4 ColorB;
 		public int TotalChars;
 
+		/// <summary>Colour ramp LUT (evenly spaced samples) for Rainbow / Glitch. Always populated.</summary>
+		[ReadOnly] public NativeArray<float4> Ramp;
+		public int RampLen;
+
 		public void Execute(int quad) {
 			if (EffectFilter >= 0 && QuadEffect[quad] != EffectFilter) return;
 
@@ -57,6 +64,7 @@ namespace Sperlich.Text {
 
 			switch (Effect) {
 				case BuiltinEffect.Wave: {
+					// Frequency = spatial wavelength (how many waves run across the text), Amplitude = height.
 					float y = math.sin((phase * Frequency) + Time * Speed) * Amplitude;
 					Offset(s, new float2(0f, y));
 					break;
@@ -73,21 +81,32 @@ namespace Sperlich.Text {
 					break;
 				}
 				case BuiltinEffect.Rainbow: {
-					float h = math.frac(phase * Frequency + Time * Speed * 0.1f);
-					MulColor(s, HsvToRgb(h, 0.85f, 1f));
+					// colour comes from the ramp (default = HSV rainbow); Frequency spreads it across glyphs.
+					float t = math.frac(phase * Frequency + Time * Speed * 0.1f);
+					MulColor(s, SampleRamp(t));
 					break;
 				}
 				case BuiltinEffect.Glow: {
-					float g = 0.5f + 0.5f * math.sin(Time * Frequency + phase * 0.2f);
-					float4 c = math.lerp(ColorA, ColorB, g);
+					// Speed = fade animation speed, Frequency = how sharp the A<->B crossfade is.
+					float s01 = 0.5f + 0.5f * math.sin(Time * Speed + phase * 0.2f);
+					float k = math.max(0.05f, Frequency);
+					float blend = math.saturate((s01 - 0.5f) * k + 0.5f);
+					float4 c = math.lerp(ColorA, ColorB, blend);
 					c.w = 1f;
 					MulColor(s, c);
 					break;
 				}
 				case BuiltinEffect.Glitch: {
-					float slice = math.step(0.82f, Hash(math.floor(Time * Frequency) + phase));
-					Offset(s, new float2(slice * (Hash(Time + phase) - 0.5f) * 2f * Amplitude, 0f));
-					if (slice > 0.5f) MulColor(s, new float4(1f, 0.4f, 0.6f, 1f));
+					// each glyph decides for itself (phase in the hash) -> per-letter shake + colour.
+					float cell = math.floor(Time * math.max(0.01f, Frequency));
+					float roll = Hash(cell * 1.37f + phase * 2.11f);
+					if (roll > 0.82f) {
+						float jx = (Hash(Time * 3.1f + phase) - 0.5f) * 2f;
+						float jy = (Hash(Time * 2.3f + phase + 5f) - 0.5f) * 2f;
+						Offset(s, new float2(jx * Amplitude, jy * Amplitude * 0.5f));
+						float rampT = math.frac(roll * 3.37f + Time * Speed * 0.2f);
+						MulColor(s, SampleRamp(rampT));
+					}
 					break;
 				}
 			}
@@ -120,15 +139,17 @@ namespace Sperlich.Text {
 			}
 		}
 
-		private static float Hash(float n) {
-			return math.frac(math.sin(n * 12.9898f) * 43758.5453f);
+		/// <summary>Linear sample of the colour-ramp LUT at <paramref name="t"/> in 0..1.</summary>
+		private float4 SampleRamp(float t) {
+			if (RampLen <= 1) return new float4(1f, 1f, 1f, 1f);
+			float f = math.saturate(t) * (RampLen - 1);
+			int i0 = (int)f;
+			int i1 = math.min(i0 + 1, RampLen - 1);
+			return math.lerp(Ramp[i0], Ramp[i1], f - i0);
 		}
 
-		private static float4 HsvToRgb(float h, float s, float v) {
-			float3 k = new float3(1f, 2f / 3f, 1f / 3f);
-			float3 p = math.abs(math.frac(new float3(h) + k) * 6f - 3f);
-			float3 rgb = v * math.lerp(new float3(1f), math.clamp(p - 1f, 0f, 1f), s);
-			return new float4(rgb, 1f);
+		private static float Hash(float n) {
+			return math.frac(math.sin(n * 12.9898f) * 43758.5453f);
 		}
 	}
 }

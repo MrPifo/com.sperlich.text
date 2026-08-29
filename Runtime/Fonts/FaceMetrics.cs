@@ -5,6 +5,7 @@ namespace Sperlich.Text {
 	/// All values are in font units at the sampling point size (see <see cref="SamplingPointSize"/>);
 	/// multiply by <c>fontSize / SamplingPointSize</c> to get local space units.
 	/// </summary>
+	[System.Serializable]
 	public struct FaceMetrics {
 
 		public float SamplingPointSize;

@@ -1,23 +1,21 @@
 using System.Collections.Generic;
-using TMPro;
 using Unity.Mathematics;
 using UnityEngine;
-using UnityEngine.TextCore;
 
 namespace Sperlich.Text {
 
 	/// <summary>
-	/// Glyph cache and generation queue on top of <see cref="FontAccess"/> (TMP dynamic SDF). Layout asks
-	/// for a code point; it gets back the real atlas entry or a tofu placeholder while the entry is
-	/// generated over the next frames.
+	/// Glyph cache and generation queue on top of an <see cref="IFontFaceSource"/>. Layout asks for a
+	/// code point; it gets back the real atlas entry or a tofu placeholder while the entry is generated
+	/// over the next frames (dynamic source) or immediately (baked source).
 	///
-	/// v1 note: TMP rasterises on the main thread, so "background generation" is an amortised per-frame
-	/// budget rather than the Task/Thread pipeline the plan reserves for the msdfgen plugin. The queue /
-	/// placeholder / swap-in shape is already what that path plugs into.
+	/// Dynamic sources rasterise on the main thread, so "background generation" is an amortised
+	/// per-frame budget. A static source (baked MTSDF atlas) resolves on the first ask and never
+	/// queues or rebuilds.
 	/// </summary>
 	public sealed class GlyphStore {
 
-		private readonly FontAccess fonts;
+		private readonly IFontFaceSource fonts;
 		private readonly Dictionary<uint, GlyphData> resolved = new();
 		private readonly Queue<uint> pendingQueue = new();
 		private readonly HashSet<uint> pendingSet = new();
@@ -35,16 +33,16 @@ namespace Sperlich.Text {
 		private bool rebuiltThisPass;
 		private int version;
 
-		public FontAccess Fonts => fonts;
+		public IFontFaceSource Fonts => fonts;
 		public Texture AtlasTexture => fonts.AtlasTexture;
 		public int AtlasSize => fonts.AtlasSize;
-		public float Padding => fonts.Padding;
+		public float DistanceRange => fonts.DistanceRange;
 		public int PendingCount => pendingQueue.Count;
 
 		/// <summary>Bumped whenever atlas contents change; renderers compare it to know they must re-mesh.</summary>
 		public int Version => version;
 
-		public GlyphStore(FontAccess fonts) {
+		public GlyphStore(IFontFaceSource fonts) {
 			this.fonts = fonts;
 		}
 
@@ -53,10 +51,17 @@ namespace Sperlich.Text {
 			if (resolved.TryGetValue(unicode, out GlyphData data)) return data;
 			if (permanentMissing.Contains(unicode)) return Placeholder(unicode);
 
-			if (fonts.TryGetCharacter(unicode, out int faceIndex, out TMP_Character ch)) {
-				GlyphData built = Build(unicode, faceIndex, ch);
+			if (fonts.TryGetGlyph(unicode, out GlyphEntry ge)) {
+				GlyphData built = Build(unicode, ge);
 				resolved[unicode] = built;
 				return built;
+			}
+
+			if (!fonts.SupportsDynamicGeneration) {
+				// Baked source: the code point was not baked and cannot be added. Serve tofu once and
+				// never ask again — no queue, no rebuild.
+				permanentMissing.Add(unicode);
+				return Placeholder(unicode);
 			}
 
 			if (pendingSet.Add(unicode)) pendingQueue.Enqueue(unicode);
@@ -66,6 +71,22 @@ namespace Sperlich.Text {
 		/// <summary>Generates up to <paramref name="budget"/> queued glyphs. Call once per frame.</summary>
 		public bool ProcessQueue(int budget) {
 			if (pendingQueue.Count == 0) return false;
+
+			if (!fonts.SupportsDynamicGeneration) {
+				// Static source: nothing to rasterise. Drain whatever prewarm queued — hits resolve
+				// straight away, misses settle to a permanent tofu. Never touches the atlas.
+				bool anyResolved = false;
+				while (pendingQueue.Count > 0) {
+					uint u = pendingQueue.Dequeue();
+					pendingSet.Remove(u);
+					if (resolved.ContainsKey(u) || permanentMissing.Contains(u)) continue;
+					if (fonts.TryGetGlyph(u, out GlyphEntry ge)) { resolved[u] = Build(u, ge); anyResolved = true; }
+					else { permanentMissing.Add(u); resolved[u] = Placeholder(u); }
+				}
+				if (anyResolved) version++;
+				return anyResolved;
+			}
+
 			rebuiltThisPass = false;
 
 			batchScratch.Clear();
@@ -77,14 +98,14 @@ namespace Sperlich.Text {
 			if (batchScratch.Count == 0) return false;
 
 			uint[] arr = batchScratch.ToArray();
-			fonts.TryAddCharacters(arr);
+			fonts.TryAddGlyphs(arr);
 
 			bool changed = false;
 			bool atlasPressure = false;
 			for (int i = 0; i < arr.Length; i++) {
 				uint u = arr[i];
-				if (fonts.TryGetCharacter(u, out int fi, out TMP_Character ch)) {
-					resolved[u] = Build(u, fi, ch);
+				if (fonts.TryGetGlyph(u, out GlyphEntry ge)) {
+					resolved[u] = Build(u, ge);
 					addAttempts.Remove(u);
 					changed = true;
 				} else {
@@ -139,23 +160,18 @@ namespace Sperlich.Text {
 			version++;
 		}
 
-		private GlyphData Build(uint unicode, int faceIndex, TMP_Character ch) {
-			Glyph g = ch.glyph;
-			GlyphMetrics m = g.metrics;
-			GlyphRect r = g.glyphRect;
-			float pad = fonts.Padding;
-
+		private static GlyphData Build(uint unicode, in GlyphEntry e) {
 			return new GlyphData {
-				FaceIndex = faceIndex,
-				GlyphIndex = g.index,
+				FaceIndex = e.FaceIndex,
+				GlyphIndex = e.GlyphIndex,
 				Unicode = unicode,
-				Advance = m.horizontalAdvance,
-				Size = new float2(m.width, m.height),
-				Bearing = new float2(m.horizontalBearingX, m.horizontalBearingY),
-				AtlasRect = new float4(r.x - pad, r.y - pad, r.width + pad * 2f, r.height + pad * 2f),
-				Padding = pad,
+				Advance = e.Advance,
+				Size = new float2(e.Width, e.Height),
+				Bearing = new float2(e.BearingX, e.BearingY),
+				AtlasRect = new float4(e.RectX, e.RectY, e.RectW, e.RectH),
+				Padding = e.Padding,
 				IsResolved = true,
-				IsWhitespace = m.width <= 0f || m.height <= 0f
+				IsWhitespace = e.Width <= 0f || e.Height <= 0f
 			};
 		}
 
@@ -164,13 +180,13 @@ namespace Sperlich.Text {
 			tofuReady = true;
 
 			uint replacement = TypographyDefaults.Tofu;
-			if (fonts.TryGetCharacter(replacement, out int fi, out TMP_Character ch)) {
-				tofu = Build(replacement, fi, ch);
+			if (fonts.TryGetGlyph(replacement, out GlyphEntry ge)) {
+				tofu = Build(replacement, ge);
 				return tofu;
 			}
-			fonts.TryAddCharacters(new[] { replacement });
-			if (fonts.TryGetCharacter(replacement, out fi, out ch)) {
-				tofu = Build(replacement, fi, ch);
+			fonts.TryAddGlyphs(new[] { replacement });
+			if (fonts.TryGetGlyph(replacement, out ge)) {
+				tofu = Build(replacement, ge);
 				version++;
 				return tofu;
 			}
@@ -183,7 +199,7 @@ namespace Sperlich.Text {
 				Size = new float2(em * 0.5f, em * 0.7f),
 				Bearing = new float2(em * 0.05f, em * 0.7f),
 				AtlasRect = float4.zero,
-				Padding = fonts.Padding,
+				Padding = 0f,
 				IsResolved = true
 			};
 			return tofu;
@@ -212,9 +228,7 @@ namespace Sperlich.Text {
 		}
 
 		private float TrySpaceAdvance(float em) {
-			if (fonts.TryGetCharacter(' ', out _, out TMP_Character ch) && ch.glyph.metrics.horizontalAdvance > 0f) {
-				return ch.glyph.metrics.horizontalAdvance;
-			}
+			if (fonts.TryGetGlyph(' ', out GlyphEntry ge) && ge.Advance > 0f) return ge.Advance;
 			return em * 0.28f;
 		}
 	}

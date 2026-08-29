@@ -14,6 +14,14 @@ namespace Sperlich.Text {
 	/// </summary>
 	public sealed class TextMeshBuilder : System.IDisposable {
 
+		/// <summary>Whole-label bloom settings (per-glyph ring blur, same shader path as the <c>&lt;bloom&gt;</c> tag).</summary>
+		public struct ComponentBloom {
+			public bool Enabled;
+			public float4 Color;
+			public float Radius;     // 0..1 fraction of the baked glow padding
+			public float Intensity;  // 0..4
+		}
+
 		private NativeList<TextVertex> vertices;
 		private NativeList<uint> indices;
 		private NativeList<int> glyphQuadStart;   // first vertex of each glyph quad (effect target)
@@ -57,7 +65,8 @@ namespace Sperlich.Text {
 
 		/// <summary>Rebuilds the vertex / index buffers. Call after every layout change.</summary>
 		public void Build(LayoutResult layout, GlyphStore store, IReadOnlyList<StyleSpan> spans,
-			Vector2 originOffset, Color baseTint, IReadOnlyList<Rect> selectionRects = null) {
+			Vector2 originOffset, Color baseTint, IReadOnlyList<Rect> selectionRects = null,
+			ComponentBloom bloom = default) {
 
 			origin = originOffset;
 			tint = new float4(baseTint.r, baseTint.g, baseTint.b, baseTint.a);
@@ -72,9 +81,16 @@ namespace Sperlich.Text {
 			float atlasSize = math.max(1, store.AtlasSize);
 			FaceMetrics fm = store.Fonts.PrimaryMetrics;
 			float samplePx = fm.IsValid ? fm.SamplingPointSize : store.Fonts.Definition.samplingPointSize;
-			// TMP normalises the dynamic SDF with gradientScale = atlasPadding + 1, so match that here
-			// or the screen-space AA band comes out ~10% too wide (everything slightly soft).
-			float distanceRange = math.max(1f, store.Padding + 1f);
+			// The atlas backend defines its own field normalisation (TMP: atlasPadding + 1; baked MTSDF:
+			// the bake pixel range). Getting it wrong widens/narrows the screen-space AA band.
+			float distanceRange = math.max(1f, store.DistanceRange);
+
+			// MTSDF fields are normalised over a much narrower distance range than TMP's SDF, so the same
+			// weight bias moves the edge far less in pixels. Scale the synthetic bold/light offsets up on
+			// the MTSDF backend so <b> reads about as heavy as it does on the SDF path.
+			bool mtsdfField = store.Fonts.FieldKind == GlyphFieldKind.MTSDF;
+			float boldBias = mtsdfField ? 0.32f : 0.20f;
+			float lightBias = mtsdfField ? 0.22f : 0.14f;
 
 			EmitMarks(layout, spans);
 			if (selectionRects != null) EmitRects(selectionRects, new float4(0.25f, 0.5f, 1f, 0.4f));
@@ -83,6 +99,7 @@ namespace Sperlich.Text {
 
 			// decoration layers behind the glyphs, far to near
 			EmitSpanFx(layout, spans, atlasSize, samplePx, distanceRange, SpanFxKind.Shadow);
+			if (bloom.Enabled) EmitComponentBloom(layout, atlasSize, samplePx, distanceRange, bloom);
 			EmitSpanFx(layout, spans, atlasSize, samplePx, distanceRange, SpanFxKind.Glow);
 			EmitSpanFx(layout, spans, atlasSize, samplePx, distanceRange, SpanFxKind.Outline);
 
@@ -113,8 +130,8 @@ namespace Sperlich.Text {
 				float v1 = (gd.AtlasRect.y + gd.AtlasRect.w) / atlasSize;
 
 				float weightBias = 0f;
-				if ((style.Synthesis & FontSynthesis.Bold) != 0) weightBias += 0.20f;
-				if ((style.Synthesis & FontSynthesis.Light) != 0) weightBias -= 0.14f;
+				if ((style.Synthesis & FontSynthesis.Bold) != 0) weightBias += boldBias;
+				if ((style.Synthesis & FontSynthesis.Light) != 0) weightBias -= lightBias;
 
 				float shear = (style.Synthesis & FontSynthesis.Italic) != 0 ? 0.22f : 0f;
 				float sdfScale = distanceRange / math.max(1f, samplePx) * math.max(0.0001f, g.FontSize);
@@ -147,6 +164,18 @@ namespace Sperlich.Text {
 				}
 				cTL *= tint; cTR *= tint; cBL *= tint; cBR *= tint;
 
+				if (style.HasGlow && style.GlowBloom) {
+					// bloom pulls the face toward a hot mix of white + the glow colour so the letters
+					// themselves read as "lit", not just haloed
+					float4 hot = math.lerp(style.GlowColor, new float4(1f, 1f, 1f, 1f), 0.6f);
+					cTL = BloomFace(cTL, hot); cTR = BloomFace(cTR, hot);
+					cBL = BloomFace(cBL, hot); cBR = BloomFace(cBR, hot);
+				} else if (bloom.Enabled) {
+					float4 hot = math.lerp(bloom.Color, new float4(1f, 1f, 1f, 1f), 0.6f);
+					cTL = BloomFace(cTL, hot); cTR = BloomFace(cTR, hot);
+					cBL = BloomFace(cBL, hot); cBR = BloomFace(cBR, hot);
+				}
+
 				float rot = g.Rotation;
 				float2 pivot = new float2(left + w * 0.5f, top - h * 0.5f);
 
@@ -165,6 +194,52 @@ namespace Sperlich.Text {
 			}
 
 			EmitLineDecorations(layout, spans, fm, samplePx);
+		}
+
+		/// <summary>Whole-label bloom: one ring-blur quad per glyph (fxMode 2, bloom flag set), same shader
+		/// path as a <c>&lt;bloom&gt;</c> span but driven by the component's bloom settings.</summary>
+		private void EmitComponentBloom(LayoutResult layout, float atlasSize, float samplePx, float distanceRange, in ComponentBloom b) {
+			float rFrac = math.min(math.saturate(b.Radius) * 1.7f, 1f);
+			for (int i = 0; i < layout.Glyphs.Count; i++) {
+				PositionedGlyph g = layout.Glyphs[i];
+				if (!g.Visible) continue;
+				GlyphData gd = g.Glyph;
+				if (gd.IsWhitespace || gd.AtlasRect.z <= 0f || gd.AtlasRect.w <= 0f) continue;
+
+				float unit = g.UnitScale;
+				float pad = gd.Padding;
+				float left = g.Pen.x + (gd.Bearing.x - pad) * unit;
+				float top = g.Pen.y + (gd.Bearing.y + pad) * unit;
+				float w = gd.AtlasRect.z * unit;
+				float h = gd.AtlasRect.w * unit;
+
+				float u0 = gd.AtlasRect.x / atlasSize;
+				float v0 = gd.AtlasRect.y / atlasSize;
+				float u1 = (gd.AtlasRect.x + gd.AtlasRect.z) / atlasSize;
+				float v1 = (gd.AtlasRect.y + gd.AtlasRect.w) / atlasSize;
+
+				float shear = 0f;
+				float sdfScale = distanceRange / math.max(1f, samplePx) * math.max(0.0001f, g.FontSize);
+				float rot = g.Rotation;
+				float radiusUv = rFrac * math.max(1f, pad) / atlasSize;
+				float4 mode = new float4(2f, radiusUv, math.max(0f, b.Intensity), 1f); // 1 = bloom
+				float4 fxTangent = new float4(u0, v0, u1, v1);
+				float2 pivot = new float2(left + w * 0.5f, top - h * 0.5f);
+
+				// tie this halo quad to its glyph's source so the Burst effect jobs move / pulse / fade it
+				// in lockstep with the letter (component effects run over every tracked quad).
+				glyphQuadStart.Add(vertices.Length);
+				glyphQuadSource.Add(g.SourceIndex);
+				glyphQuadEffect.Add(0); // BuiltinEffect.None
+
+				AddQuad(
+					Corner(new float2(left, top), pivot, rot, shear, h, top),
+					Corner(new float2(left + w, top), pivot, rot, shear, h, top),
+					Corner(new float2(left + w, top - h), pivot, rot, shear, h, top),
+					Corner(new float2(left, top - h), pivot, rot, shear, h, top),
+					new float2(u0, v1), new float2(u1, v1), new float2(u1, v0), new float2(u0, v0),
+					b.Color, b.Color, b.Color, b.Color, sdfScale, 0f, mode, fxTangent);
+			}
 		}
 
 		private enum SpanFxKind { Shadow, Glow, Outline }
@@ -205,6 +280,7 @@ namespace Sperlich.Text {
 
 				float4 color;
 				float4 mode; // x: 0 face / 1 outline / 2 glow ; y,z: params
+				float4 fxTangent = default; // glow: this glyph's cell uv-rect, to clamp the blur taps
 
 				if (kind == SpanFxKind.Shadow) {
 					float dx = style.ShadowOffsetEm.x * g.FontSize;
@@ -213,13 +289,14 @@ namespace Sperlich.Text {
 					color = style.ShadowColor;
 					mode = new float4(0f, math.max(0.001f, style.ShadowSoftness), 0f, 0f);
 				} else if (kind == SpanFxKind.Glow) {
-					// grow the quad + UV rect outward so the halo is not clipped to the glyph box
-					float grow = math.saturate(style.GlowRadius) * pad * unit;
-					float ugrow = math.saturate(style.GlowRadius) * pad / atlasSize;
-					left -= grow; top += grow; w += grow * 2f; h += grow * 2f;
-					u0 -= ugrow; v0 -= ugrow; u1 += ugrow; v1 += ugrow;
+					// No quad grow — the baked cell already carries 'pad' transparent px (Msdf Glow
+					// Padding) for the halo to blur into. The shader ring-blurs the face coverage within
+					// this cell; radius is a 0..1 fraction of that padding, sent in UV units.
 					color = style.GlowColor;
-					mode = new float4(2f, math.max(0.02f, style.GlowRadius), math.max(0f, style.GlowIntensity), 0f);
+					float rFrac = math.saturate(style.GlowRadius) * (style.GlowBloom ? 1.7f : 1f);
+					float radiusUv = math.min(rFrac, 1f) * math.max(1f, pad) / atlasSize;
+					mode = new float4(2f, radiusUv, math.max(0f, style.GlowIntensity), style.GlowBloom ? 1f : 0f);
+					fxTangent = new float4(u0, v0, u1, v1);
 				} else {
 					color = style.OutlineColor;
 					mode = new float4(1f, math.max(0.01f, style.OutlineWidth), 0f, 0f);
@@ -232,7 +309,7 @@ namespace Sperlich.Text {
 					Corner(new float2(left + w, top - h), pivot, rot, shear, h, top),
 					Corner(new float2(left, top - h), pivot, rot, shear, h, top),
 					new float2(u0, v1), new float2(u1, v1), new float2(u1, v0), new float2(u0, v0),
-					color, color, color, color, sdfScale, 0f, mode);
+					color, color, color, color, sdfScale, 0f, mode, fxTangent);
 			}
 		}
 
@@ -266,6 +343,13 @@ namespace Sperlich.Text {
 					gradientBounds[key] = new float4(left, top - h, left + w, top);
 				}
 			}
+		}
+
+		/// <summary>Blends a face colour partway toward the hot bloom colour, keeping its own alpha.</summary>
+		private static float4 BloomFace(float4 c, float4 hot) {
+			float4 r = math.lerp(c, hot, 0.45f);
+			r.w = c.w;
+			return r;
 		}
 
 		private static float4 GradientAt(in StyleState s, float u, float v) {
@@ -372,10 +456,11 @@ namespace Sperlich.Text {
 
 		private void AddQuad(float3 p0, float3 p1, float3 p2, float3 p3,
 			float2 uv0, float2 uv1, float2 uv2, float2 uv3,
-			float4 c0, float4 c1, float4 c2, float4 c3, float sdfScale, float weightBias, float4 mode) {
+			float4 c0, float4 c1, float4 c2, float4 c3, float sdfScale, float weightBias, float4 mode,
+			float4 tan = default) {
 
 			uint b = (uint)vertices.Length;
-			float4 tan = new float4(1f, 0f, 0f, -1f);
+			if (tan.x == 0f && tan.y == 0f && tan.z == 0f && tan.w == 0f) tan = new float4(1f, 0f, 0f, -1f);
 			float3 n = new float3(0f, 0f, -1f);
 
 			vertices.Add(Vtx(p0, n, tan, c0, uv0, sdfScale, weightBias, mode));

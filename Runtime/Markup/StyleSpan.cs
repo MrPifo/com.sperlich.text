@@ -32,8 +32,9 @@ namespace Sperlich.Text {
 
 		public bool HasGlow;
 		public float4 GlowColor;
-		public float GlowRadius;      // SDF units, ~0.2..1
+		public float GlowRadius;      // 0..1 fraction of the baked glow padding
 		public float GlowIntensity;
+		public bool GlowBloom;        // true = wide blown-out bloom (white-hot core, tints the face)
 
 		public bool HasShadow;
 		public float4 ShadowColor;
@@ -70,7 +71,7 @@ namespace Sperlich.Text {
 				&& MarkColor.Equals(o.MarkColor)
 				&& SpanEffect == o.SpanEffect
 				&& HasOutline == o.HasOutline && OutlineColor.Equals(o.OutlineColor) && Mathf.Approximately(OutlineWidth, o.OutlineWidth)
-				&& HasGlow == o.HasGlow && GlowColor.Equals(o.GlowColor)
+				&& HasGlow == o.HasGlow && GlowColor.Equals(o.GlowColor) && GlowBloom == o.GlowBloom
 					&& Mathf.Approximately(GlowRadius, o.GlowRadius) && Mathf.Approximately(GlowIntensity, o.GlowIntensity)
 				&& HasShadow == o.HasShadow && ShadowColor.Equals(o.ShadowColor)
 					&& ShadowOffsetEm.Equals(o.ShadowOffsetEm) && Mathf.Approximately(ShadowSoftness, o.ShadowSoftness)
