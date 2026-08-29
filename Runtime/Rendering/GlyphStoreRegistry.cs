@@ -41,5 +41,19 @@ namespace Sperlich.Text {
 				stores[font] = e;
 			}
 		}
+
+#if UNITY_EDITOR
+		/// <summary>
+		/// Editor-only: dispose and forget every cached store. Used after the "TMP Essential Resources"
+		/// get imported, so labels rebuild their atlas from a clean state. Callers must rebind their
+		/// labels right after (see <c>SperlichText.EditorRebindFont</c>).
+		/// </summary>
+		public static void EditorPurgeAll() {
+			foreach (Entry e in stores.Values) {
+				e.Store.Fonts.Dispose();
+			}
+			stores.Clear();
+		}
+#endif
 	}
 }

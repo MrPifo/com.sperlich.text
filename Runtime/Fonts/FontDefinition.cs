@@ -24,9 +24,22 @@ namespace Sperlich.Text {
 		[Tooltip("SDF spread in pixels. Larger allows thicker outlines/glow before clipping.")]
 		[Range(4, 32)] public int sdfPadding = 9;
 
+		/// <summary>Allowed square atlas edge lengths, in pixels. Fixed set so the value stays a
+		/// power of two that the GPU and TMP are happy with.</summary>
+		public enum AtlasResolution {
+			_512 = 512,
+			_1024 = 1024,
+			_2048 = 2048,
+			_4096 = 4096,
+			_8192 = 8192
+		}
+
 		[Header("Atlas")]
 		[Tooltip("Square atlas edge length in pixels.")]
-		public int atlasSize = 2048;
+		public AtlasResolution atlasResolution = AtlasResolution._2048;
+
+		/// <summary>Square atlas edge length in pixels (from <see cref="atlasResolution"/>).</summary>
+		public int atlasSize => (int)atlasResolution;
 
 		[Tooltip("Distance field kind. Only SDF is produced in v1; MTSDF is reserved for the native plugin path.")]
 		public GlyphFieldKind fieldKind = GlyphFieldKind.SDF;
@@ -38,5 +51,33 @@ namespace Sperlich.Text {
 				if (fallbacks[i] != null && fallbacks[i] != primary) yield return fallbacks[i];
 			}
 		}
+
+#if UNITY_EDITOR
+		private static bool s_rebuildQueued;
+
+		/// <summary>
+		/// Editor-only. The runtime <see cref="FontAccess"/> bakes sampling size / SDF padding / atlas
+		/// size / face list when it is built and never re-reads this asset. So an inspector edit would
+		/// otherwise do nothing to labels already on screen. Here we clamp the numeric fields and queue
+		/// a one-shot rebuild of every live <see cref="SperlichText"/>.
+		/// </summary>
+		private void OnValidate() {
+			samplingPointSize = Mathf.Clamp(samplingPointSize, 24, 160);
+			sdfPadding = Mathf.Clamp(sdfPadding, 4, 32);
+
+			if (s_rebuildQueued) return;
+			s_rebuildQueued = true;
+			UnityEditor.EditorApplication.delayCall += RebuildLiveLabels;
+		}
+
+		private static void RebuildLiveLabels() {
+			s_rebuildQueued = false;
+			GlyphStoreRegistry.EditorPurgeAll();
+			foreach (SperlichText label in FindObjectsByType<SperlichText>(
+				         FindObjectsInactive.Include, FindObjectsSortMode.None)) {
+				label.EditorRebindFont();
+			}
+		}
+#endif
 	}
 }

@@ -72,7 +72,9 @@ namespace Sperlich.Text {
 			float atlasSize = math.max(1, store.AtlasSize);
 			FaceMetrics fm = store.Fonts.PrimaryMetrics;
 			float samplePx = fm.IsValid ? fm.SamplingPointSize : store.Fonts.Definition.samplingPointSize;
-			float distanceRange = math.max(1f, store.Padding);
+			// TMP normalises the dynamic SDF with gradientScale = atlasPadding + 1, so match that here
+			// or the screen-space AA band comes out ~10% too wide (everything slightly soft).
+			float distanceRange = math.max(1f, store.Padding + 1f);
 
 			EmitMarks(layout, spans);
 			if (selectionRects != null) EmitRects(selectionRects, new float4(0.25f, 0.5f, 1f, 0.4f));
@@ -88,7 +90,13 @@ namespace Sperlich.Text {
 				PositionedGlyph g = layout.Glyphs[i];
 				if (!g.Visible) continue;
 				GlyphData gd = g.Glyph;
-				if (gd.IsWhitespace || gd.AtlasRect.z <= 0f || gd.AtlasRect.w <= 0f) continue;
+				if (gd.IsWhitespace) continue;
+				if (gd.AtlasRect.z <= 0f || gd.AtlasRect.w <= 0f) {
+					// No atlas rect and not resolved -> the font chain has no glyph and even the tofu
+					// replacement char is absent. Draw a hollow "notdef" box so the gap stays visible.
+					if (!gd.IsResolved) EmitNotdefBox(g);
+					continue;
+				}
 
 				StyleState style = SpanStyle(spans, g.SpanIndex);
 				float unit = g.UnitScale;
@@ -377,6 +385,35 @@ namespace Sperlich.Text {
 
 			indices.Add(b); indices.Add(b + 1); indices.Add(b + 2);
 			indices.Add(b); indices.Add(b + 2); indices.Add(b + 3);
+		}
+
+		/// <summary>
+		/// Draws a hollow rectangle (four solid bars) where a glyph is missing from the whole font
+		/// chain, so the gap is visible while debugging instead of an invisible blank. Uses the
+		/// glyph's resolved colour so a missing char inside a coloured span shows a coloured box.
+		/// </summary>
+		private void EmitNotdefBox(PositionedGlyph g) {
+			float fs = g.FontSize;
+			float adv = g.Glyph.Advance * g.UnitScale;
+			float w = adv > 1f ? adv * 0.78f : fs * 0.42f;
+			float h = fs * 0.62f;
+			float t = math.max(1f, fs * 0.055f);           // bar thickness
+			float x0 = g.Pen.x + math.max(0f, (adv - w) * 0.5f);
+			float x1 = x0 + w;
+			float y0 = g.Pen.y;                             // baseline
+			float y1 = y0 + h;
+
+			float4 c = g.Color * tint;
+			c.w *= 0.9f;
+
+			Bar(x0, y0, x1, y0 + t, c);        // bottom
+			Bar(x0, y1 - t, x1, y1, c);        // top
+			Bar(x0, y0, x0 + t, y1, c);        // left
+			Bar(x1 - t, y0, x1, y1, c);        // right
+		}
+
+		private void Bar(float x0, float y0, float x1, float y1, float4 c) {
+			AddSolidQuad(new float2(x0, y1), new float2(x1, y1), new float2(x1, y0), new float2(x0, y0), c);
 		}
 
 		private void AddSolidQuad(float2 p0, float2 p1, float2 p2, float2 p3, float4 color) {

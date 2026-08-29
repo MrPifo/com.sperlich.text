@@ -118,11 +118,16 @@ Shader "Sperlich/Text SDF"
                 return o;
             }
 
-            // signed distance -> coverage with screen-space anti-aliasing
-            float coverage(float dist, float threshold, float sharpen)
+            // raw-SDF distance -> coverage, anti-aliased in screen space.
+            // screenPxRange (from uv0.z, = TextMeshBuilder's sdfScale) is the screen-pixel length
+            // of half the SDF padding spread, so 2*screenPxRange is the screen-pixel length of one
+            // raw-SDF unit. No derivatives: does not depend on fwidth being reliable (it is not on
+            // every GPU / shader target), which is what made the text look blurry.
+            float coverage(float dist, float threshold, float screenPxRange, float sharpen)
             {
-                float aa = fwidth(dist) * max(0.0001, 2.0 - sharpen);
-                return saturate((dist - threshold) / max(aa, 1e-5) + 0.5);
+                float px = (dist - threshold) * (2.0 * max(screenPxRange, 1e-4));
+                float aa = max(1e-4, 2.0 - sharpen); // ~1 px edge at sharpen=1, hard at 2, soft at 0
+                return saturate(px / aa + 0.5);
             }
 
             fixed4 frag(v2f i) : SV_Target
@@ -150,7 +155,7 @@ Shader "Sperlich/Text SDF"
                 {
                     float ow = i.uv1.y;
                     fixed4 oc = i.color;
-                    oc.a *= coverage(d, -ow, _Sharpness);
+                    oc.a *= coverage(d, -ow, i.uv0.z, _Sharpness);
                     #ifdef UNITY_UI_CLIP_RECT
                     oc.a *= UnityGet2DClipping(i.worldPos.xy, _ClipRect);
                     #endif
@@ -178,7 +183,7 @@ Shader "Sperlich/Text SDF"
                     return gc;
                 }
 
-                float faceA = coverage(d, 0.0, _Sharpness);
+                float faceA = coverage(d, 0.0, i.uv0.z, _Sharpness);
                 bool realGlyph = (i.uv1.y <= 0.001); // per-tag shadow copies carry a softness in uv1.y
                 if (!realGlyph) faceA = saturate(d / i.uv1.y + 0.5); // soft edge for the per-tag shadow copy
                 fixed4 col = i.color;
@@ -187,7 +192,7 @@ Shader "Sperlich/Text SDF"
                 // component-level outline: band just outside the face edge (real glyph only)
                 if (realGlyph && _OutlineWidth > 0.0)
                 {
-                    float outlineA = coverage(d, -_OutlineWidth, _Sharpness);
+                    float outlineA = coverage(d, -_OutlineWidth, i.uv0.z, _Sharpness);
                     fixed4 o = _OutlineColor;
                     o.a *= outlineA;
                     col = lerp(o, col, faceA);

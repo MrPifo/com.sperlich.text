@@ -10,11 +10,11 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: eb9b4be27899ab5498d23d6070b76a52, type: 3}
-  m_Name: FontDefinition
+  m_Name: Comfortaa
   m_EditorClassIdentifier: Sperlich.Text::Sperlich.Text.FontDefinition
-  primary: {fileID: 12800000, guid: 9512283e489327c49bcede969ec6da80, type: 3}
+  primary: {fileID: 12800000, guid: d82b1dbec5ad37245a68aa3e6a124c3f, type: 3}
   fallbacks: []
-  samplingPointSize: 90
-  sdfPadding: 9
-  atlasSize: 2048
+  samplingPointSize: 120
+  sdfPadding: 6
+  atlasSize: 8192
   fieldKind: 0

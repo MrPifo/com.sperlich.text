@@ -248,6 +248,21 @@ namespace Sperlich.Text {
 			PushMaterialProps();
 			SetAllDirty();
 		}
+
+		/// <summary>
+		/// Editor-only: drop the current font binding and rebuild it from a clean state, then flag a
+		/// full text + layout rebuild. Called after the "TMP Essential Resources" get imported so an
+		/// existing label picks up the now-working SDF atlas without a scene reload.
+		/// </summary>
+		public void EditorRebindFont() {
+			// Drop the stale reference without going through the ref-counted registry (the caller has
+			// usually already purged it), then rebuild from scratch.
+			boundFont = null;
+			store = null;
+			RebindFont();
+			textDirty = layoutDirty = true;
+			SetAllDirty();
+		}
 #endif
 
 		private void LateUpdate() {

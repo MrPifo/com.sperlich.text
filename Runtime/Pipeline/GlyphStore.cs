@@ -23,6 +23,13 @@ namespace Sperlich.Text {
 		private readonly HashSet<uint> pendingSet = new();
 		private readonly List<uint> batchScratch = new();
 
+		// Code points the font chain has no glyph for at all (as opposed to "atlas is full right now").
+		// Kept apart so a genuinely absent glyph is served a tofu box once and never again drives an
+		// atlas clear/refill — that loop is what blanked the whole label on exotic characters.
+		private readonly HashSet<uint> permanentMissing = new();
+		private readonly Dictionary<uint, int> addAttempts = new();
+		private const int MaxAddAttempts = 2;
+
 		private GlyphData tofu;
 		private bool tofuReady;
 		private bool rebuiltThisPass;
@@ -44,6 +51,7 @@ namespace Sperlich.Text {
 		public GlyphData GetOrRequest(uint unicode) {
 			if (IsWhitespace(unicode)) return GlyphData.Whitespace(unicode, WhitespaceAdvance(unicode));
 			if (resolved.TryGetValue(unicode, out GlyphData data)) return data;
+			if (permanentMissing.Contains(unicode)) return Placeholder(unicode);
 
 			if (fonts.TryGetCharacter(unicode, out int faceIndex, out TMP_Character ch)) {
 				GlyphData built = Build(unicode, faceIndex, ch);
@@ -72,21 +80,37 @@ namespace Sperlich.Text {
 			fonts.TryAddCharacters(arr);
 
 			bool changed = false;
-			int stillMissing = 0;
+			bool atlasPressure = false;
 			for (int i = 0; i < arr.Length; i++) {
 				uint u = arr[i];
 				if (fonts.TryGetCharacter(u, out int fi, out TMP_Character ch)) {
 					resolved[u] = Build(u, fi, ch);
+					addAttempts.Remove(u);
 					changed = true;
 				} else {
-					stillMissing++;
+					int attempts = addAttempts.TryGetValue(u, out int a) ? a + 1 : 1;
+					addAttempts[u] = attempts;
+					if (attempts >= MaxAddAttempts) {
+						// Survived a dedicated add attempt (and an atlas rebuild, if one happened) and
+						// still is not in any face: the font chain has no glyph for it. Cache the tofu
+						// box so it never re-queues and never again looks like atlas pressure.
+						permanentMissing.Add(u);
+						resolved[u] = Placeholder(u);
+					} else {
+						atlasPressure = true;
+					}
 				}
 			}
 
-			if (stillMissing > 0 && !rebuiltThisPass && resolved.Count > 8) {
+			// Only a code point that might still fit after a clear counts as pressure. Genuinely
+			// absent glyphs must not drive an endless clear/refill loop (that blanked the label).
+			if (atlasPressure && !rebuiltThisPass && resolved.Count > 8) {
 				RebuildAtlas();
 				for (int i = 0; i < arr.Length; i++) {
-					if (!resolved.ContainsKey(arr[i]) && pendingSet.Add(arr[i])) pendingQueue.Enqueue(arr[i]);
+					uint u = arr[i];
+					if (!resolved.ContainsKey(u) && !permanentMissing.Contains(u) && pendingSet.Add(u)) {
+						pendingQueue.Enqueue(u);
+					}
 				}
 			}
 
