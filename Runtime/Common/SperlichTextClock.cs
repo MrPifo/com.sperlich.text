@@ -1,14 +1,21 @@
 using UnityEngine;
-using PauseMgr = Sperlich.PauseManager.PauseManager;
 
 namespace Sperlich.Text {
 
 	/// <summary>
 	/// Single time source for every animated part of the text renderer (effects, reveal, caret blink).
-	/// Pause-aware by default via <c>Sperlich.PauseManager</c>; the host game can replace the provider
-	/// to hook a different clock without the package taking a hard dependency on it.
+	/// The package has no dependency on any pause system: by default the clock just follows
+	/// <see cref="Time.deltaTime"/>. To make it pause-aware, point <see cref="IsPausedProvider"/> at
+	/// your own pause state (one line, e.g. <c>SperlichTextClock.IsPausedProvider = () =&gt; MyPause.IsPaused;</c>),
+	/// or replace <see cref="DeltaTimeProvider"/> / <see cref="TimeProvider"/> entirely.
 	/// </summary>
 	public static class SperlichTextClock {
+
+		/// <summary>
+		/// Optional pause hook. Returns <c>true</c> while animated text should hold still.
+		/// Defaults to "never paused" so the package works stand-alone.
+		/// </summary>
+		public static System.Func<bool> IsPausedProvider = () => false;
 
 		/// <summary>Delta time provider. Defaults to a pause-gated <see cref="Time.deltaTime"/>.</summary>
 		public static System.Func<float> DeltaTimeProvider = DefaultDelta;
@@ -19,20 +26,22 @@ namespace Sperlich.Text {
 		private static float accumulated;
 		private static int lastAccumulatedFrame = -1;
 
-		/// <summary>Seconds since the last frame, or 0 while the game is paused.</summary>
+		/// <summary>Seconds since the last frame, or 0 while <see cref="IsPausedProvider"/> reports paused.</summary>
 		public static float DeltaTime => DeltaTimeProvider();
 
-		/// <summary>Monotonic seconds that stops advancing while the game is paused.</summary>
+		/// <summary>Monotonic seconds that stops advancing while <see cref="IsPausedProvider"/> reports paused.</summary>
 		public static float Time => TimeProvider();
 
+		private static bool IsPaused => IsPausedProvider != null && IsPausedProvider();
+
 		private static float DefaultDelta() {
-			return PauseMgr.IsPaused ? 0f : UnityEngine.Time.deltaTime;
+			return IsPaused ? 0f : UnityEngine.Time.deltaTime;
 		}
 
 		private static float DefaultTime() {
 			if (lastAccumulatedFrame != UnityEngine.Time.frameCount) {
 				lastAccumulatedFrame = UnityEngine.Time.frameCount;
-				if (PauseMgr.IsPaused == false) {
+				if (IsPaused == false) {
 					accumulated += UnityEngine.Time.deltaTime;
 				}
 			}

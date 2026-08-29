@@ -25,9 +25,9 @@ Namespaces: `Sperlich.Text` (runtime), `Sperlich.Text.EditorTools` (editor).
    tried and does NOT work in edit mode / CanvasRenderer rejects the format. Do not reintroduce a
    custom `UpdateGeometry`/`UpdateMaterial`. `TextMeshBuilder.Apply(Mesh)` (MeshData path) is kept
    but unused — reserved for a future world-space renderer.
-3. **PauseManager-aware time** via `Common/SperlichTextClock.cs`
-   (`using PauseMgr = Sperlich.PauseManager.PauseManager;` — the namespace and the class share a
-   name, so the alias is required).
+3. **Single time source** via `Common/SperlichTextClock.cs`. The package has **no** pause-system
+   dependency. The clock follows `Time.deltaTime` by default; the host makes it pause-aware by
+   setting `SperlichTextClock.IsPausedProvider` (or replacing `DeltaTimeProvider` / `TimeProvider`).
 
 ## File map (runtime, under `Runtime/`)
 
@@ -128,7 +128,7 @@ Sonderzeichen: aeoeue AEOEUE ss - "quote" 'single' >>guillemet<< -- dash ... end
 - Only edit `.cs` and the `.shader`. Never touch `.unity` / `.prefab` (project rule). Scene/prefab
   setup steps go to the user as instructions — see the README "Setup in the editor" section.
 - Keep all TMP API contact inside `FontAccess` + `GlyphStore`.
-- Anything time-based must stay `PauseManager`-compatible via `SperlichTextClock`.
+- Anything time-based must go through `SperlichTextClock` (never `Time.deltaTime` directly).
 - `///` XML doc for types/methods, `//` for inline only, prefer self-documenting names.
 - When a batch is confirmed good, fold its summary into the README table + "Known follow-ups" and
   trim this "Current state" section down to the confirmed baseline.

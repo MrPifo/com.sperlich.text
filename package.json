@@ -23,7 +23,6 @@
     "markup"
   ],
   "dependencies": {
-    "com.sperlich.pausemanager": "https://github.com/MrPifo/com.sperlich.pausemanager.git",
     "com.unity.ugui": "2.0.0",
     "com.unity.burst": "1.8.30",
     "com.unity.collections": "2.6.8",
