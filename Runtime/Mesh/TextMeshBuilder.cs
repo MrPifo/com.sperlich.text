@@ -22,6 +22,14 @@ namespace Sperlich.Text {
 			public float Intensity;  // 0..4
 		}
 
+		public struct ComponentShadow {
+			public bool Enabled;
+			public float4 Color;
+			public float2 Offset;
+			public float Softness;
+			public float Dilate;
+		}
+
 		private NativeList<TextVertex> vertices;
 		private NativeList<uint> indices;
 		private NativeList<int> glyphQuadStart;   // first vertex of each glyph quad (effect target)
@@ -66,7 +74,7 @@ namespace Sperlich.Text {
 		/// <summary>Rebuilds the vertex / index buffers. Call after every layout change.</summary>
 		public void Build(LayoutResult layout, GlyphStore store, IReadOnlyList<StyleSpan> spans,
 			Vector2 originOffset, Color baseTint, IReadOnlyList<Rect> selectionRects = null,
-			ComponentBloom bloom = default) {
+			ComponentBloom bloom = default, ComponentShadow componentShadow = default, float extraPadding = 0f) {
 
 			origin = originOffset;
 			tint = new float4(baseTint.r, baseTint.g, baseTint.b, baseTint.a);
@@ -98,10 +106,11 @@ namespace Sperlich.Text {
 			ComputeGradientBounds(layout, spans);
 
 			// decoration layers behind the glyphs, far to near
-			EmitSpanFx(layout, spans, atlasSize, samplePx, distanceRange, SpanFxKind.Shadow);
-			if (bloom.Enabled) EmitComponentBloom(layout, atlasSize, samplePx, distanceRange, bloom);
-			EmitSpanFx(layout, spans, atlasSize, samplePx, distanceRange, SpanFxKind.Glow);
-			EmitSpanFx(layout, spans, atlasSize, samplePx, distanceRange, SpanFxKind.Outline);
+			if (componentShadow.Enabled) EmitComponentShadow(layout, store, spans, atlasSize, samplePx, distanceRange, componentShadow, extraPadding);
+			EmitSpanFx(layout, spans, atlasSize, samplePx, distanceRange, SpanFxKind.Shadow, extraPadding);
+			if (bloom.Enabled) EmitComponentBloom(layout, atlasSize, samplePx, distanceRange, bloom, extraPadding);
+			EmitSpanFx(layout, spans, atlasSize, samplePx, distanceRange, SpanFxKind.Glow, extraPadding);
+			EmitSpanFx(layout, spans, atlasSize, samplePx, distanceRange, SpanFxKind.Outline, extraPadding);
 
 			for (int i = 0; i < layout.Glyphs.Count; i++) {
 				PositionedGlyph g = layout.Glyphs[i];
@@ -117,17 +126,24 @@ namespace Sperlich.Text {
 
 				StyleState style = SpanStyle(spans, g.SpanIndex);
 				float unit = g.UnitScale;
-				float pad = gd.Padding;
+				float pad = gd.Padding + extraPadding;
 
 				float left = g.Pen.x + (gd.Bearing.x - pad) * unit;
 				float top = g.Pen.y + (gd.Bearing.y + pad) * unit;
-				float w = gd.AtlasRect.z * unit;
-				float h = gd.AtlasRect.w * unit;
+				float w = (gd.AtlasRect.z + extraPadding * 2f) * unit;
+				float h = (gd.AtlasRect.w + extraPadding * 2f) * unit;
 
-				float u0 = gd.AtlasRect.x / atlasSize;
-				float v0 = gd.AtlasRect.y / atlasSize;
-				float u1 = (gd.AtlasRect.x + gd.AtlasRect.z) / atlasSize;
-				float v1 = (gd.AtlasRect.y + gd.AtlasRect.w) / atlasSize;
+				float u0 = (gd.AtlasRect.x - extraPadding) / atlasSize;
+				float v0 = (gd.AtlasRect.y - extraPadding) / atlasSize;
+				float u1 = (gd.AtlasRect.x + gd.AtlasRect.z + extraPadding) / atlasSize;
+				float v1 = (gd.AtlasRect.y + gd.AtlasRect.w + extraPadding) / atlasSize;
+
+				float4 cellRect = new float4(
+					gd.AtlasRect.x / atlasSize,
+					gd.AtlasRect.y / atlasSize,
+					(gd.AtlasRect.x + gd.AtlasRect.z) / atlasSize,
+					(gd.AtlasRect.y + gd.AtlasRect.w) / atlasSize
+				);
 
 				float weightBias = 0f;
 				if ((style.Synthesis & FontSynthesis.Bold) != 0) weightBias += boldBias;
@@ -178,6 +194,8 @@ namespace Sperlich.Text {
 
 				float rot = g.Rotation;
 				float2 pivot = new float2(left + w * 0.5f, top - h * 0.5f);
+				float uv_per_local = samplePx / (atlasSize * math.max(0.0001f, g.FontSize));
+				float4 faceMode = new float4(0f, 0f, 0f, uv_per_local);
 
 				glyphQuadStart.Add(vertices.Length);
 				glyphQuadSource.Add(g.SourceIndex);
@@ -190,15 +208,73 @@ namespace Sperlich.Text {
 					Corner(new float2(left + w, top - h), pivot, rot, shear, h, top),
 					Corner(new float2(left, top - h), pivot, rot, shear, h, top),
 					new float2(u0, v1), new float2(u1, v1), new float2(u1, v0), new float2(u0, v0),
-					cTL, cTR, cBR, cBL, sdfScale, weightBias, float4.zero);
+					cTL, cTR, cBR, cBL, sdfScale, weightBias, faceMode, cellRect);
 			}
 
 			EmitLineDecorations(layout, spans, fm, samplePx);
 		}
 
+		private void EmitComponentShadow(LayoutResult layout, GlyphStore store, IReadOnlyList<StyleSpan> spans, float atlasSize, float samplePx, float distanceRange, in ComponentShadow s, float extraPadding) {
+			bool mtsdfField = store.Fonts.FieldKind == GlyphFieldKind.MTSDF;
+			float boldBias = mtsdfField ? 0.32f : 0.20f;
+			float lightBias = mtsdfField ? 0.22f : 0.14f;
+
+			for (int i = 0; i < layout.Glyphs.Count; i++) {
+				PositionedGlyph g = layout.Glyphs[i];
+				if (!g.Visible) continue;
+				GlyphData gd = g.Glyph;
+				if (gd.IsWhitespace || gd.AtlasRect.z <= 0f || gd.AtlasRect.w <= 0f) continue;
+
+				StyleState style = SpanStyle(spans, g.SpanIndex);
+				float unit = g.UnitScale;
+				float pad = gd.Padding + extraPadding;
+				
+				float dx = s.Offset.x;
+				float dy = s.Offset.y;
+
+				float left = g.Pen.x + (gd.Bearing.x - pad) * unit + dx;
+				float top = g.Pen.y + (gd.Bearing.y + pad) * unit + dy;
+				
+				float w = (gd.AtlasRect.z + extraPadding * 2f) * unit;
+				float h = (gd.AtlasRect.w + extraPadding * 2f) * unit;
+
+				float u0 = (gd.AtlasRect.x - extraPadding) / atlasSize;
+				float v0 = (gd.AtlasRect.y - extraPadding) / atlasSize;
+				float u1 = (gd.AtlasRect.x + gd.AtlasRect.z + extraPadding) / atlasSize;
+				float v1 = (gd.AtlasRect.y + gd.AtlasRect.w + extraPadding) / atlasSize;
+
+				float4 cellRect = new float4(
+					gd.AtlasRect.x / atlasSize,
+					gd.AtlasRect.y / atlasSize,
+					(gd.AtlasRect.x + gd.AtlasRect.z) / atlasSize,
+					(gd.AtlasRect.y + gd.AtlasRect.w) / atlasSize
+				);
+
+				float shear = (style.Synthesis & FontSynthesis.Italic) != 0 ? 0.22f : 0f;
+				float sdfScale = distanceRange / math.max(1f, samplePx) * math.max(0.0001f, g.FontSize);
+				float rot = g.Rotation;
+
+				float weightBias = s.Dilate * 0.5f;
+
+				// Pass softness directly in UI pixels for smooth continuous distance curve
+				float uv_per_local = samplePx / (atlasSize * math.max(0.0001f, g.FontSize));
+				float4 mode = new float4(3f, math.max(0f, s.Softness), 0f, uv_per_local);
+				float4 c = s.Color * tint;
+
+				float2 pivot = new float2(left - dx + w * 0.5f, top - dy - h * 0.5f);
+				AddQuad(
+					Corner(new float2(left, top), pivot, rot, shear, h, top),
+					Corner(new float2(left + w, top), pivot, rot, shear, h, top),
+					Corner(new float2(left + w, top - h), pivot, rot, shear, h, top),
+					Corner(new float2(left, top - h), pivot, rot, shear, h, top),
+					new float2(u0, v1), new float2(u1, v1), new float2(u1, v0), new float2(u0, v0),
+					c, c, c, c, sdfScale, weightBias, mode, cellRect);
+			}
+		}
+
 		/// <summary>Whole-label bloom: one ring-blur quad per glyph (fxMode 2, bloom flag set), same shader
 		/// path as a <c>&lt;bloom&gt;</c> span but driven by the component's bloom settings.</summary>
-		private void EmitComponentBloom(LayoutResult layout, float atlasSize, float samplePx, float distanceRange, in ComponentBloom b) {
+		private void EmitComponentBloom(LayoutResult layout, float atlasSize, float samplePx, float distanceRange, in ComponentBloom b, float extraPadding) {
 			float rFrac = math.min(math.saturate(b.Radius) * 1.7f, 1f);
 			for (int i = 0; i < layout.Glyphs.Count; i++) {
 				PositionedGlyph g = layout.Glyphs[i];
@@ -207,23 +283,31 @@ namespace Sperlich.Text {
 				if (gd.IsWhitespace || gd.AtlasRect.z <= 0f || gd.AtlasRect.w <= 0f) continue;
 
 				float unit = g.UnitScale;
-				float pad = gd.Padding;
+				float pad = gd.Padding + extraPadding;
 				float left = g.Pen.x + (gd.Bearing.x - pad) * unit;
 				float top = g.Pen.y + (gd.Bearing.y + pad) * unit;
-				float w = gd.AtlasRect.z * unit;
-				float h = gd.AtlasRect.w * unit;
+				float w = (gd.AtlasRect.z + extraPadding * 2f) * unit;
+				float h = (gd.AtlasRect.w + extraPadding * 2f) * unit;
 
-				float u0 = gd.AtlasRect.x / atlasSize;
-				float v0 = gd.AtlasRect.y / atlasSize;
-				float u1 = (gd.AtlasRect.x + gd.AtlasRect.z) / atlasSize;
-				float v1 = (gd.AtlasRect.y + gd.AtlasRect.w) / atlasSize;
+				float u0 = (gd.AtlasRect.x - extraPadding) / atlasSize;
+				float v0 = (gd.AtlasRect.y - extraPadding) / atlasSize;
+				float u1 = (gd.AtlasRect.x + gd.AtlasRect.z + extraPadding) / atlasSize;
+				float v1 = (gd.AtlasRect.y + gd.AtlasRect.w + extraPadding) / atlasSize;
+
+				float4 cellRect = new float4(
+					gd.AtlasRect.x / atlasSize,
+					gd.AtlasRect.y / atlasSize,
+					(gd.AtlasRect.x + gd.AtlasRect.z) / atlasSize,
+					(gd.AtlasRect.y + gd.AtlasRect.w) / atlasSize
+				);
 
 				float shear = 0f;
 				float sdfScale = distanceRange / math.max(1f, samplePx) * math.max(0.0001f, g.FontSize);
 				float rot = g.Rotation;
-				float radiusUv = rFrac * math.max(1f, pad) / atlasSize;
-				float4 mode = new float4(2f, radiusUv, math.max(0f, b.Intensity), 1f); // 1 = bloom
-				float4 fxTangent = new float4(u0, v0, u1, v1);
+				float bloomRadiusPx = rFrac * math.max(1f, pad * unit);
+				float uv_per_local = samplePx / (atlasSize * math.max(0.0001f, g.FontSize));
+				float intensity = math.max(0.0001f, b.Intensity);
+				float4 mode = new float4(2f, bloomRadiusPx, -intensity, uv_per_local); // negative intensity = bloom
 				float2 pivot = new float2(left + w * 0.5f, top - h * 0.5f);
 
 				// tie this halo quad to its glyph's source so the Burst effect jobs move / pulse / fade it
@@ -238,7 +322,7 @@ namespace Sperlich.Text {
 					Corner(new float2(left + w, top - h), pivot, rot, shear, h, top),
 					Corner(new float2(left, top - h), pivot, rot, shear, h, top),
 					new float2(u0, v1), new float2(u1, v1), new float2(u1, v0), new float2(u0, v0),
-					b.Color, b.Color, b.Color, b.Color, sdfScale, 0f, mode, fxTangent);
+					b.Color, b.Color, b.Color, b.Color, sdfScale, 0f, mode, cellRect);
 			}
 		}
 
@@ -246,7 +330,7 @@ namespace Sperlich.Text {
 
 		/// <summary>Emits one decoration quad per glyph for the shadow / glow / outline span tags.</summary>
 		private void EmitSpanFx(LayoutResult layout, IReadOnlyList<StyleSpan> spans,
-			float atlasSize, float samplePx, float distanceRange, SpanFxKind kind) {
+			float atlasSize, float samplePx, float distanceRange, SpanFxKind kind, float extraPadding) {
 
 			for (int i = 0; i < layout.Glyphs.Count; i++) {
 				PositionedGlyph g = layout.Glyphs[i];
@@ -263,43 +347,50 @@ namespace Sperlich.Text {
 				if (!on) continue;
 
 				float unit = g.UnitScale;
-				float pad = gd.Padding;
+				float pad = gd.Padding + extraPadding;
 				float left = g.Pen.x + (gd.Bearing.x - pad) * unit;
 				float top = g.Pen.y + (gd.Bearing.y + pad) * unit;
-				float w = gd.AtlasRect.z * unit;
-				float h = gd.AtlasRect.w * unit;
+				float w = (gd.AtlasRect.z + extraPadding * 2f) * unit;
+				float h = (gd.AtlasRect.w + extraPadding * 2f) * unit;
 
-				float u0 = gd.AtlasRect.x / atlasSize;
-				float v0 = gd.AtlasRect.y / atlasSize;
-				float u1 = (gd.AtlasRect.x + gd.AtlasRect.z) / atlasSize;
-				float v1 = (gd.AtlasRect.y + gd.AtlasRect.w) / atlasSize;
+				float u0 = (gd.AtlasRect.x - extraPadding) / atlasSize;
+				float v0 = (gd.AtlasRect.y - extraPadding) / atlasSize;
+				float u1 = (gd.AtlasRect.x + gd.AtlasRect.z + extraPadding) / atlasSize;
+				float v1 = (gd.AtlasRect.y + gd.AtlasRect.w + extraPadding) / atlasSize;
+
+				float4 cellRect = new float4(
+					gd.AtlasRect.x / atlasSize,
+					gd.AtlasRect.y / atlasSize,
+					(gd.AtlasRect.x + gd.AtlasRect.z) / atlasSize,
+					(gd.AtlasRect.y + gd.AtlasRect.w) / atlasSize
+				);
 
 				float shear = (style.Synthesis & FontSynthesis.Italic) != 0 ? 0.22f : 0f;
 				float sdfScale = distanceRange / math.max(1f, samplePx) * math.max(0.0001f, g.FontSize);
 				float rot = g.Rotation;
 
 				float4 color;
-				float4 mode; // x: 0 face / 1 outline / 2 glow ; y,z: params
-				float4 fxTangent = default; // glow: this glyph's cell uv-rect, to clamp the blur taps
+				float4 mode; // x: 0 face / 1 outline / 2 glow / 3 shadow ; y,z,w: params
+				float uv_per_local = samplePx / (atlasSize * math.max(0.0001f, g.FontSize));
 
 				if (kind == SpanFxKind.Shadow) {
 					float dx = style.ShadowOffsetEm.x * g.FontSize;
 					float dy = style.ShadowOffsetEm.y * g.FontSize;
 					left += dx; top += dy;
 					color = style.ShadowColor;
-					mode = new float4(0f, math.max(0.001f, style.ShadowSoftness), 0f, 0f);
+					float softnessPx = style.ShadowSoftness * g.FontSize;
+					mode = new float4(3f, math.max(0f, softnessPx), 0f, uv_per_local);
 				} else if (kind == SpanFxKind.Glow) {
-					// No quad grow — the baked cell already carries 'pad' transparent px (Msdf Glow
-					// Padding) for the halo to blur into. The shader ring-blurs the face coverage within
-					// this cell; radius is a 0..1 fraction of that padding, sent in UV units.
 					color = style.GlowColor;
 					float rFrac = math.saturate(style.GlowRadius) * (style.GlowBloom ? 1.7f : 1f);
-					float radiusUv = math.min(rFrac, 1f) * math.max(1f, pad) / atlasSize;
-					mode = new float4(2f, radiusUv, math.max(0f, style.GlowIntensity), style.GlowBloom ? 1f : 0f);
-					fxTangent = new float4(u0, v0, u1, v1);
+					float glowRadiusPx = rFrac * math.max(1f, pad * unit);
+					float intensity = math.max(0.0001f, style.GlowIntensity);
+					if (style.GlowBloom) intensity = -intensity;
+					mode = new float4(2f, glowRadiusPx, intensity, uv_per_local);
 				} else {
 					color = style.OutlineColor;
-					mode = new float4(1f, math.max(0.01f, style.OutlineWidth), 0f, 0f);
+					float outlineWidthPx = style.OutlineWidth * g.FontSize;
+					mode = new float4(1f, math.max(0.01f, outlineWidthPx), 0f, uv_per_local);
 				}
 
 				float2 pivot = new float2(left + w * 0.5f, top - h * 0.5f);
@@ -309,7 +400,7 @@ namespace Sperlich.Text {
 					Corner(new float2(left + w, top - h), pivot, rot, shear, h, top),
 					Corner(new float2(left, top - h), pivot, rot, shear, h, top),
 					new float2(u0, v1), new float2(u1, v1), new float2(u1, v0), new float2(u0, v0),
-					color, color, color, color, sdfScale, 0f, mode, fxTangent);
+					color, color, color, color, sdfScale, 0f, mode, cellRect);
 			}
 		}
 

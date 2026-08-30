@@ -8,22 +8,47 @@ namespace Sperlich.Text {
 	/// <summary>Tunables for one built-in effect instance.</summary>
 	[System.Serializable]
 	public struct BuiltinEffectParams {
+		/// <summary>Gibt an, ob dieser Effekt aktiv ist.</summary>
+		public bool Enabled;
+
 		public BuiltinEffect Effect;
 		public float Amplitude;   // px for spatial effects, unit-less for others
 		public float Frequency;   // Wave: spatial wavelength · Glow: A<->B crossfade sharpness · Glitch/Rainbow: spread
 		public float Speed;       // temporal speed (Glow: fade animation speed · Glitch: colour cycle)
+		/// <summary>Anteil betroffener Zeichen (0..1 bzw. 0..100%, z. B. für Glitch-Wahrscheinlichkeit).</summary>
+		[UnityEngine.Range(0f, 1f)]
+		public float Amount;
+
 		public UnityEngine.Color ColorA;
 		public UnityEngine.Color ColorB;
 
 		/// <summary>Colour ramp for Rainbow / Glitch. <c>null</c> (or empty) = built-in HSV rainbow.</summary>
 		public UnityEngine.Gradient Ramp;
 
-		public static BuiltinEffectParams Wave => new BuiltinEffectParams { Effect = BuiltinEffect.Wave, Amplitude = 6f, Frequency = 0.35f, Speed = 6f };
-		public static BuiltinEffectParams Shake => new BuiltinEffectParams { Effect = BuiltinEffect.Shake, Amplitude = 2.5f, Frequency = 30f, Speed = 1f };
-		public static BuiltinEffectParams Pulse => new BuiltinEffectParams { Effect = BuiltinEffect.Pulse, Amplitude = 0.12f, Frequency = 2f, Speed = 4f };
-		public static BuiltinEffectParams Rainbow => new BuiltinEffectParams { Effect = BuiltinEffect.Rainbow, Amplitude = 1f, Frequency = 0.08f, Speed = 1.5f };
-		public static BuiltinEffectParams Glow => new BuiltinEffectParams { Effect = BuiltinEffect.Glow, Amplitude = 0.4f, Frequency = 3f, Speed = 1.5f, ColorA = new UnityEngine.Color(0.55f, 0.55f, 0.55f, 1f), ColorB = UnityEngine.Color.white };
-		public static BuiltinEffectParams Glitch => new BuiltinEffectParams { Effect = BuiltinEffect.Glitch, Amplitude = 3f, Frequency = 12f, Speed = 1f };
+		/// <summary>Erstellt einen 8-Stop-Regenbogen-Gradienten mit nahtlosem Farbkreis (Rot, Orange, Gelb, Grün, Cyan, Blau, Violett, Rot).</summary>
+		public static UnityEngine.Gradient CreateRainbowGradient() {
+			var g = new UnityEngine.Gradient();
+			g.SetKeys(
+				new[] {
+					new UnityEngine.GradientColorKey(new UnityEngine.Color(1f, 0.1f, 0.1f), 0f),
+					new UnityEngine.GradientColorKey(new UnityEngine.Color(1f, 0.55f, 0f), 1f / 7f),
+					new UnityEngine.GradientColorKey(new UnityEngine.Color(1f, 0.92f, 0.05f), 2f / 7f),
+					new UnityEngine.GradientColorKey(new UnityEngine.Color(0.1f, 0.85f, 0.2f), 3f / 7f),
+					new UnityEngine.GradientColorKey(new UnityEngine.Color(0f, 0.8f, 1f), 4f / 7f),
+					new UnityEngine.GradientColorKey(new UnityEngine.Color(0.15f, 0.35f, 1f), 5f / 7f),
+					new UnityEngine.GradientColorKey(new UnityEngine.Color(0.7f, 0.15f, 0.95f), 6f / 7f),
+					new UnityEngine.GradientColorKey(new UnityEngine.Color(1f, 0.1f, 0.1f), 1f),
+				},
+				new[] { new UnityEngine.GradientAlphaKey(1f, 0f), new UnityEngine.GradientAlphaKey(1f, 1f) });
+			return g;
+		}
+
+		public static BuiltinEffectParams Wave => new BuiltinEffectParams { Enabled = true, Effect = BuiltinEffect.Wave, Amplitude = 6f, Frequency = 0.35f, Speed = 6f };
+		public static BuiltinEffectParams Shake => new BuiltinEffectParams { Enabled = true, Effect = BuiltinEffect.Shake, Amplitude = 2.5f, Frequency = 30f, Speed = 1f };
+		public static BuiltinEffectParams Pulse => new BuiltinEffectParams { Enabled = true, Effect = BuiltinEffect.Pulse, Amplitude = 0.12f, Frequency = 2f, Speed = 4f };
+		public static BuiltinEffectParams Rainbow => new BuiltinEffectParams { Enabled = true, Effect = BuiltinEffect.Rainbow, Amplitude = 1f, Frequency = 0.04f, Speed = 1.5f, Ramp = CreateRainbowGradient() };
+		public static BuiltinEffectParams Glow => new BuiltinEffectParams { Enabled = true, Effect = BuiltinEffect.Glow, Amplitude = 0.4f, Frequency = 3f, Speed = 1.5f, ColorA = new UnityEngine.Color(0.55f, 0.55f, 0.55f, 1f), ColorB = UnityEngine.Color.white };
+		public static BuiltinEffectParams Glitch => new BuiltinEffectParams { Enabled = true, Effect = BuiltinEffect.Glitch, Amplitude = 3f, Frequency = 12f, Speed = 1f, Amount = 0.25f, Ramp = CreateRainbowGradient() };
 	}
 
 	/// <summary>
@@ -47,6 +72,7 @@ namespace Sperlich.Text {
 		public float Amplitude;
 		public float Frequency;
 		public float Speed;
+		public float Amount;
 		public float4 ColorA;
 		public float4 ColorB;
 		public int TotalChars;
@@ -100,7 +126,8 @@ namespace Sperlich.Text {
 					// each glyph decides for itself (phase in the hash) -> per-letter shake + colour.
 					float cell = math.floor(Time * math.max(0.01f, Frequency));
 					float roll = Hash(cell * 1.37f + phase * 2.11f);
-					if (roll > 0.82f) {
+					float threshold = 1f - math.saturate(Amount);
+					if (roll >= threshold && Amount > 0f) {
 						float jx = (Hash(Time * 3.1f + phase) - 0.5f) * 2f;
 						float jy = (Hash(Time * 2.3f + phase + 5f) - 0.5f) * 2f;
 						Offset(s, new float2(jx * Amplitude, jy * Amplitude * 0.5f));

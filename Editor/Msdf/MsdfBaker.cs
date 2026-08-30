@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
+using System.Threading.Tasks;
 using Sperlich.Text.Rasterizer;
 using UnityEditor;
 using UnityEngine;
@@ -184,10 +185,12 @@ namespace Sperlich.Text.EditorTools {
 			res.occupancy = packer != null ? packer.Occupancy : 0f;
 			res.pixels = new Color32[chosen * chosen]; // zero-initialised (transparent black)
 
-			// -- generate + blit -----------------------------------------------------------------
-			for (int i = 0; i < pendings.Count; i++) {
+			// -- generate + blit (multi-threaded across all CPU cores) ---------------------------
+			MsdfFontData.GlyphRecord?[] glyphRecords = new MsdfFontData.GlyphRecord?[pendings.Count];
+
+			Parallel.For(0, pendings.Count, i => {
 				Pending pd = pendings[i];
-				if (placeX[i] < 0) { res.dropped.Add(pd.codepoint); continue; }
+				if (placeX[i] < 0) return;
 
 				FontOutlineSource src = sources[pd.face];
 				float s = (float) p.emSize / Mathf.Max(1, src.UnitsPerEm); // font units -> em pixels (float divide!)
@@ -224,7 +227,7 @@ namespace Sperlich.Text.EditorTools {
 					}
 				}
 
-				res.glyphs.Add(new MsdfFontData.GlyphRecord {
+				glyphRecords[i] = new MsdfFontData.GlyphRecord {
 					face = pd.face, codepoint = pd.codepoint, glyphIndex = pd.glyphIndex,
 					advance = pd.advance,
 					width = (float) (bb.r - bb.l) * s,
@@ -233,7 +236,15 @@ namespace Sperlich.Text.EditorTools {
 					bearingY = pd.bearingY,
 					rectX = sx, rectY = bottomY, rectW = pd.wCell, rectH = pd.hCell,
 					padding = pd.margin
-				});
+				};
+			});
+
+			for (int i = 0; i < pendings.Count; i++) {
+				if (placeX[i] < 0) {
+					res.dropped.Add(pendings[i].codepoint);
+				} else if (glyphRecords[i].HasValue) {
+					res.glyphs.Add(glyphRecords[i].Value);
+				}
 			}
 
 			foreach (FontOutlineSource src in sources) src.Dispose();

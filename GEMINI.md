@@ -1,4 +1,4 @@
-# Sperlich.Text — working notes for Claude
+# Sperlich.Text — working notes
 
 Isolated context for this package only. Read this first when a session touches
 `Assets/com.sperlich.text/`.

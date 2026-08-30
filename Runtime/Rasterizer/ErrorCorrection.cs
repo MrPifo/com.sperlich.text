@@ -30,13 +30,20 @@ namespace Sperlich.Text.Rasterizer {
 	}
 
 	internal abstract class ArtifactClassifierBase {
-		protected readonly double span;
-		protected readonly bool protectedFlag;
+		protected double span;
+		protected bool protectedFlag;
 
 		protected ArtifactClassifierBase(double span, bool protectedFlag) {
 			this.span = span;
 			this.protectedFlag = protectedFlag;
 		}
+
+		public void SetState(double s, bool p) {
+			span = s;
+			protectedFlag = p;
+		}
+
+		public void SetProtected(bool p) => protectedFlag = p;
 
 		internal const int FlagCandidate = 0x01;
 		internal const int FlagArtifact = 0x02;
@@ -79,13 +86,16 @@ namespace Sperlich.Text.Rasterizer {
 		private readonly Vector2 texelSize;
 		private readonly double minImproveRatio;
 
+		public readonly ShapeArtifactClassifier c_left, c_down, c_right, c_up, c_dl, c_dr, c_ul, c_ur;
+
 		// Per-texel state set by FindErrors before each classifier() call.
 		public Vector2 ShapeCoord, SdfCoord;
 		public int MsdBase;   // pixel base index into sdf.Data for the current texel
 		public bool ProtectedFlag;
 
 		public ShapeDistanceChecker(FloatBitmap sdf, Shape shape, Projection projection,
-			DistanceMapping distanceMapping, double minImproveRatio, bool overlapSupport) {
+			DistanceMapping distanceMapping, double minImproveRatio, bool overlapSupport,
+			double hSpan, double vSpan, double dSpan) {
 			this.sdf = sdf;
 			this.distanceMapping = distanceMapping;
 			this.minImproveRatio = minImproveRatio;
@@ -99,14 +109,20 @@ namespace Sperlich.Text.Rasterizer {
 				finderSimple = new ShapeDistanceFinder<SimpleContourCombiner<PerpendicularDistanceSelector, double, PerpEdgeCache>,
 					PerpendicularDistanceSelector, double, PerpEdgeCache>(shape,
 					new SimpleContourCombiner<PerpendicularDistanceSelector, double, PerpEdgeCache>(shape));
+
+			c_left = new ShapeArtifactClassifier(this, new Vector2(-1, 0), hSpan, false);
+			c_down = new ShapeArtifactClassifier(this, new Vector2(0, -1), vSpan, false);
+			c_right = new ShapeArtifactClassifier(this, new Vector2(1, 0), hSpan, false);
+			c_up = new ShapeArtifactClassifier(this, new Vector2(0, 1), vSpan, false);
+			c_dl = new ShapeArtifactClassifier(this, new Vector2(-1, -1), dSpan, false);
+			c_dr = new ShapeArtifactClassifier(this, new Vector2(1, -1), dSpan, false);
+			c_ul = new ShapeArtifactClassifier(this, new Vector2(-1, 1), dSpan, false);
+			c_ur = new ShapeArtifactClassifier(this, new Vector2(1, 1), dSpan, false);
 		}
 
 		private double ShapeDistance(Vector2 p) => useOverlap ? finderOverlap.Distance(p) : finderSimple.Distance(p);
 
-		public ArtifactClassifierBase Classifier(Vector2 direction, double span) =>
-			new ShapeArtifactClassifier(this, direction, span, ProtectedFlag);
-
-		private sealed class ShapeArtifactClassifier : ArtifactClassifierBase {
+		public sealed class ShapeArtifactClassifier : ArtifactClassifierBase {
 			private readonly ShapeDistanceChecker parent;
 			private readonly Vector2 direction;
 			private readonly float[] oldMSD = new float[3];
@@ -380,21 +396,29 @@ namespace Sperlich.Text.Rasterizer {
 		public void FindErrors(FloatBitmap sdf) {
 			(double hSpan, double vSpan, double dSpan) = Spans();
 			float[] d = sdf.Data;
+			BaseArtifactClassifier hClass = new BaseArtifactClassifier(hSpan, false);
+			BaseArtifactClassifier vClass = new BaseArtifactClassifier(vSpan, false);
+			BaseArtifactClassifier dClass = new BaseArtifactClassifier(dSpan, false);
+
 			for (int y = 0; y < sdf.Height; ++y)
 				for (int x = 0; x < sdf.Width; ++x) {
 					int c = sdf.PixelBase(x, y);
 					float cm = Median(d[c], d[c + 1], d[c + 2]);
 					bool prot = (stencil[S(x, y)] & PROTECTED) != 0;
+					hClass.SetState(hSpan, prot);
+					vClass.SetState(vSpan, prot);
+					dClass.SetState(dSpan, prot);
+
 					int lB = 0, bB = 0, rB = 0, tB = 0;
 					bool artifact =
-						(x > 0 && (HasLinearArtifact(new BaseArtifactClassifier(hSpan, prot), cm, d, c, (lB = sdf.PixelBase(x - 1, y))))) ||
-						(y > 0 && (HasLinearArtifact(new BaseArtifactClassifier(vSpan, prot), cm, d, c, (bB = sdf.PixelBase(x, y - 1))))) ||
-						(x < sdf.Width - 1 && (HasLinearArtifact(new BaseArtifactClassifier(hSpan, prot), cm, d, c, (rB = sdf.PixelBase(x + 1, y))))) ||
-						(y < sdf.Height - 1 && (HasLinearArtifact(new BaseArtifactClassifier(vSpan, prot), cm, d, c, (tB = sdf.PixelBase(x, y + 1))))) ||
-						(x > 0 && y > 0 && HasDiagonalArtifact(new BaseArtifactClassifier(dSpan, prot), cm, d, c, lB, bB, sdf.PixelBase(x - 1, y - 1))) ||
-						(x < sdf.Width - 1 && y > 0 && HasDiagonalArtifact(new BaseArtifactClassifier(dSpan, prot), cm, d, c, rB, bB, sdf.PixelBase(x + 1, y - 1))) ||
-						(x > 0 && y < sdf.Height - 1 && HasDiagonalArtifact(new BaseArtifactClassifier(dSpan, prot), cm, d, c, lB, tB, sdf.PixelBase(x - 1, y + 1))) ||
-						(x < sdf.Width - 1 && y < sdf.Height - 1 && HasDiagonalArtifact(new BaseArtifactClassifier(dSpan, prot), cm, d, c, rB, tB, sdf.PixelBase(x + 1, y + 1)));
+						(x > 0 && (HasLinearArtifact(hClass, cm, d, c, (lB = sdf.PixelBase(x - 1, y))))) ||
+						(y > 0 && (HasLinearArtifact(vClass, cm, d, c, (bB = sdf.PixelBase(x, y - 1))))) ||
+						(x < sdf.Width - 1 && (HasLinearArtifact(hClass, cm, d, c, (rB = sdf.PixelBase(x + 1, y))))) ||
+						(y < sdf.Height - 1 && (HasLinearArtifact(vClass, cm, d, c, (tB = sdf.PixelBase(x, y + 1))))) ||
+						(x > 0 && y > 0 && HasDiagonalArtifact(dClass, cm, d, c, lB, bB, sdf.PixelBase(x - 1, y - 1))) ||
+						(x < sdf.Width - 1 && y > 0 && HasDiagonalArtifact(dClass, cm, d, c, rB, bB, sdf.PixelBase(x + 1, y - 1))) ||
+						(x > 0 && y < sdf.Height - 1 && HasDiagonalArtifact(dClass, cm, d, c, lB, tB, sdf.PixelBase(x - 1, y + 1))) ||
+						(x < sdf.Width - 1 && y < sdf.Height - 1 && HasDiagonalArtifact(dClass, cm, d, c, rB, tB, sdf.PixelBase(x + 1, y + 1)));
 					if (artifact) stencil[S(x, y)] |= ERROR;
 				}
 		}
@@ -404,7 +428,7 @@ namespace Sperlich.Text.Rasterizer {
 			(double hSpan, double vSpan, double dSpan) = Spans();
 			float[] d = sdf.Data;
 			ShapeDistanceChecker checker = new ShapeDistanceChecker(sdf, shape, transformation.Projection,
-				transformation.DistanceMapping, minImproveRatio, overlapSupport);
+				transformation.DistanceMapping, minImproveRatio, overlapSupport, hSpan, vSpan, dSpan);
 
 			int xDirection = 1;
 			for (int y = 0; y < sdf.Height; ++y) {
@@ -415,18 +439,28 @@ namespace Sperlich.Text.Rasterizer {
 					checker.ShapeCoord = transformation.Unproject(new Vector2(x + 0.5, y + 0.5));
 					checker.SdfCoord = new Vector2(x + 0.5, y + 0.5);
 					checker.MsdBase = c;
-					checker.ProtectedFlag = (stencil[S(x, y)] & PROTECTED) != 0;
+					bool prot = (stencil[S(x, y)] & PROTECTED) != 0;
+					checker.ProtectedFlag = prot;
+					checker.c_left.SetProtected(prot);
+					checker.c_down.SetProtected(prot);
+					checker.c_right.SetProtected(prot);
+					checker.c_up.SetProtected(prot);
+					checker.c_dl.SetProtected(prot);
+					checker.c_dr.SetProtected(prot);
+					checker.c_ul.SetProtected(prot);
+					checker.c_ur.SetProtected(prot);
+
 					float cm = Median(d[c], d[c + 1], d[c + 2]);
 					int lB = 0, bB = 0, rB = 0, tB = 0;
 					bool artifact =
-						(x > 0 && HasLinearArtifact(checker.Classifier(new Vector2(-1, 0), hSpan), cm, d, c, (lB = sdf.PixelBase(x - 1, y)))) ||
-						(y > 0 && HasLinearArtifact(checker.Classifier(new Vector2(0, -1), vSpan), cm, d, c, (bB = sdf.PixelBase(x, y - 1)))) ||
-						(x < sdf.Width - 1 && HasLinearArtifact(checker.Classifier(new Vector2(1, 0), hSpan), cm, d, c, (rB = sdf.PixelBase(x + 1, y)))) ||
-						(y < sdf.Height - 1 && HasLinearArtifact(checker.Classifier(new Vector2(0, 1), vSpan), cm, d, c, (tB = sdf.PixelBase(x, y + 1)))) ||
-						(x > 0 && y > 0 && HasDiagonalArtifact(checker.Classifier(new Vector2(-1, -1), dSpan), cm, d, c, lB, bB, sdf.PixelBase(x - 1, y - 1))) ||
-						(x < sdf.Width - 1 && y > 0 && HasDiagonalArtifact(checker.Classifier(new Vector2(1, -1), dSpan), cm, d, c, rB, bB, sdf.PixelBase(x + 1, y - 1))) ||
-						(x > 0 && y < sdf.Height - 1 && HasDiagonalArtifact(checker.Classifier(new Vector2(-1, 1), dSpan), cm, d, c, lB, tB, sdf.PixelBase(x - 1, y + 1))) ||
-						(x < sdf.Width - 1 && y < sdf.Height - 1 && HasDiagonalArtifact(checker.Classifier(new Vector2(1, 1), dSpan), cm, d, c, rB, tB, sdf.PixelBase(x + 1, y + 1)));
+						(x > 0 && HasLinearArtifact(checker.c_left, cm, d, c, (lB = sdf.PixelBase(x - 1, y)))) ||
+						(y > 0 && HasLinearArtifact(checker.c_down, cm, d, c, (bB = sdf.PixelBase(x, y - 1)))) ||
+						(x < sdf.Width - 1 && HasLinearArtifact(checker.c_right, cm, d, c, (rB = sdf.PixelBase(x + 1, y)))) ||
+						(y < sdf.Height - 1 && HasLinearArtifact(checker.c_up, cm, d, c, (tB = sdf.PixelBase(x, y + 1)))) ||
+						(x > 0 && y > 0 && HasDiagonalArtifact(checker.c_dl, cm, d, c, lB, bB, sdf.PixelBase(x - 1, y - 1))) ||
+						(x < sdf.Width - 1 && y > 0 && HasDiagonalArtifact(checker.c_dr, cm, d, c, rB, bB, sdf.PixelBase(x + 1, y - 1))) ||
+						(x > 0 && y < sdf.Height - 1 && HasDiagonalArtifact(checker.c_ul, cm, d, c, lB, tB, sdf.PixelBase(x - 1, y + 1))) ||
+						(x < sdf.Width - 1 && y < sdf.Height - 1 && HasDiagonalArtifact(checker.c_ur, cm, d, c, rB, tB, sdf.PixelBase(x + 1, y + 1)));
 					if (artifact) stencil[S(x, y)] |= ERROR;
 				}
 				xDirection = -xDirection;

@@ -27,7 +27,14 @@ namespace Sperlich.Text {
 		public void RemoveScript(ITextEffect e) => scripts.Remove(e);
 		public void ClearScripts() => scripts.Clear();
 
-		public bool HasWork => builtins.Count > 0 || scripts.Count > 0 || RevealVisibleChars != int.MaxValue;
+		public bool HasWork {
+			get {
+				for (int i = 0; i < builtins.Count; i++) {
+					if (builtins[i].Enabled && builtins[i].Effect != BuiltinEffect.None) return true;
+				}
+				return scripts.Count > 0 || RevealVisibleChars != int.MaxValue;
+			}
+		}
 
 		public void Apply(TextMeshBuilder builder, float time, float deltaTime, int totalSourceChars) {
 			if (builder == null || builder.GlyphQuadCount == 0) return;
@@ -42,7 +49,7 @@ namespace Sperlich.Text {
 
 			// component-level effects (whole text)
 			for (int i = 0; i < builtins.Count; i++) {
-				if (builtins[i].Effect != BuiltinEffect.None) {
+				if (builtins[i].Enabled && builtins[i].Effect != BuiltinEffect.None) {
 					RunEffect(builtins[i], -1, verts, quadStart, quadSource, quadEffect, time, totalSourceChars);
 				}
 			}
@@ -86,6 +93,7 @@ namespace Sperlich.Text {
 				Amplitude = p.Amplitude,
 				Frequency = p.Frequency,
 				Speed = p.Speed,
+				Amount = p.Amount,
 				ColorA = new float4(p.ColorA.r, p.ColorA.g, p.ColorA.b, p.ColorA.a),
 				ColorB = new float4(p.ColorB.r, p.ColorB.g, p.ColorB.b, p.ColorB.a),
 				TotalChars = totalChars,

@@ -24,6 +24,7 @@ namespace Sperlich.Text.Rasterizer {
 	public interface IEdgeSelector<TSelf, TDistance, TCache>
 		where TSelf : class, IEdgeSelector<TSelf, TDistance, TCache>, new()
 		where TCache : struct {
+		void Clear();
 		void Reset(Vector2 p);
 		void AddEdge(ref TCache cache, EdgeSegment prevEdge, EdgeSegment edge, EdgeSegment nextEdge);
 		void Merge(TSelf other);
@@ -44,6 +45,10 @@ namespace Sperlich.Text.Rasterizer {
 
 		private Vector2 p;
 		private SignedDistance minDistance = SignedDistance.Infinite;
+
+		public void Clear() {
+			minDistance = SignedDistance.Infinite;
+		}
 
 		public void Reset(Vector2 newP) {
 			double delta = SelectorConst.DistanceDeltaFactor * (newP - p).Length;
@@ -84,8 +89,15 @@ namespace Sperlich.Text.Rasterizer {
 		private double nearEdgeParam;
 
 		public PerpendicularDistanceSelectorBase() {
+			Clear();
+		}
+
+		public void Clear() {
+			MinTrueDistance = SignedDistance.Infinite;
 			minNegativePerpendicularDistance = -Math.Abs(MinTrueDistance.distance);
 			minPositivePerpendicularDistance = Math.Abs(MinTrueDistance.distance);
+			nearEdge = null;
+			nearEdgeParam = 0;
 		}
 
 		public static bool GetPerpendicularDistance(ref double distance, Vector2 ep, Vector2 edgeDir) {
@@ -170,6 +182,10 @@ namespace Sperlich.Text.Rasterizer {
 		private readonly PerpendicularDistanceSelectorBase b = new PerpendicularDistanceSelectorBase();
 		private Vector2 p;
 
+		public void Clear() {
+			b.Clear();
+		}
+
 		public void Reset(Vector2 newP) {
 			double delta = SelectorConst.DistanceDeltaFactor * (newP - p).Length;
 			b.Reset(delta);
@@ -224,6 +240,12 @@ namespace Sperlich.Text.Rasterizer {
 		public readonly PerpendicularDistanceSelectorBase R = new PerpendicularDistanceSelectorBase();
 		public readonly PerpendicularDistanceSelectorBase G = new PerpendicularDistanceSelectorBase();
 		public readonly PerpendicularDistanceSelectorBase B = new PerpendicularDistanceSelectorBase();
+
+		public void Clear() {
+			R.Clear();
+			G.Clear();
+			B.Clear();
+		}
 
 		public void Reset(Vector2 newP) {
 			double delta = SelectorConst.DistanceDeltaFactor * (newP - P).Length;
@@ -302,6 +324,7 @@ namespace Sperlich.Text.Rasterizer {
 
 	public sealed class MultiDistanceSelector : IEdgeSelector<MultiDistanceSelector, MultiDistance, PerpEdgeCache> {
 		internal readonly MultiDistanceSelectorImpl impl = new MultiDistanceSelectorImpl();
+		public void Clear() => impl.Clear();
 		public void Reset(Vector2 p) => impl.Reset(p);
 		public void AddEdge(ref PerpEdgeCache cache, EdgeSegment prevEdge, EdgeSegment edge, EdgeSegment nextEdge) =>
 			impl.AddEdge(ref cache, prevEdge, edge, nextEdge);
@@ -314,6 +337,7 @@ namespace Sperlich.Text.Rasterizer {
 
 	public sealed class MultiAndTrueDistanceSelector : IEdgeSelector<MultiAndTrueDistanceSelector, MultiAndTrueDistance, PerpEdgeCache> {
 		internal readonly MultiDistanceSelectorImpl impl = new MultiDistanceSelectorImpl();
+		public void Clear() => impl.Clear();
 		public void Reset(Vector2 p) => impl.Reset(p);
 		public void AddEdge(ref PerpEdgeCache cache, EdgeSegment prevEdge, EdgeSegment edge, EdgeSegment nextEdge) =>
 			impl.AddEdge(ref cache, prevEdge, edge, nextEdge);

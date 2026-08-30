@@ -49,12 +49,9 @@ namespace Sperlich.Text.EditorTools {
 			autoBox.Add(col.Property(serializedObject.FindProperty("m_autoSizeMin"), "Min", indent: 1));
 			autoBox.Add(col.Property(serializedObject.FindProperty("m_autoSizeMax"), "Max", indent: 1));
 			layout.Add(autoBox);
-			layout.Add(AlignedRow("Align", AlignButtons(serializedObject.FindProperty("m_align"),
-				new[] { "align_horizontally_left", "align_horizontally_center", "align_horizontally_right",
-						"align_horizontally_justified", "align_horizontally_justified", "align_horizontally_center" },
+			layout.Add(AlignedRow("Align", AlignButtons(serializedObject.FindProperty("m_align"), false,
 				new[] { "Left", "Center", "Right", "Justified", "Flush (justify last line too)", "Geometry Center" })));
-			layout.Add(AlignedRow("Vertical Align", AlignButtons(serializedObject.FindProperty("m_verticalAlign"),
-				new[] { "align_vertically_top", "align_vertically_center", "align_vertically_bottom", "align_vertically_center" },
+			layout.Add(AlignedRow("Vertical Align", AlignButtons(serializedObject.FindProperty("m_verticalAlign"), true,
 				new[] { "Top", "Middle", "Bottom", "Baseline" })));
 			layout.Add(EnumRow("m_wrap", "Wrap"));
 			layout.Add(EnumRow("m_overflow", "Overflow"));
@@ -84,25 +81,26 @@ namespace Sperlich.Text.EditorTools {
 			face.Add(Field("m_faceDilate", "Dilate"));
 			face.Add(Field("m_sharpness", "Sharpness"));
 
-			var outline = Section(root, "OUTLINE", false);
+			var outline = EffectSection(root, "OUTLINE", "m_outline", false);
 			outline.Add(Field("m_outlineColor", "Color"));
-			outline.Add(Field("m_outlineWidth", "Width"));
+			outline.Add(Field("m_outlineWidth", "Width (px)"));
 			outline.Add(EnumRow("m_outlineMode", "Placement"));
 
-			var shadow = Section(root, "DROP SHADOW", false);
+			var shadow = EffectSection(root, "DROP SHADOW", "m_shadow", false);
 			shadow.Add(Field("m_shadowColor", "Color"));
 			shadow.Add(col.Row("Offset", SperlichEditorWidgets.CreateRadialVector2Field(
-				serializedObject.FindProperty("m_shadowOffset"), 0.5f, Accent)));
-			shadow.Add(Field("m_shadowSoftness", "Softness"));
+				serializedObject.FindProperty("m_shadowOffset"), 30f, Accent)));
+			shadow.Add(Field("m_shadowSoftness", "Softness (px)"));
 			shadow.Add(Field("m_shadowDilate", "Dilate"));
+			shadow.Add(EnumRow("m_shadowQuality", "Quality"));
 
-			var glow = Section(root, "GLOW", false);
+			var glow = EffectSection(root, "GLOW", "m_glow", false);
 			glow.Add(Field("m_glowColor", "Color"));
 			glow.Add(Field("m_glowPower", "Power"));
 			glow.Add(Field("m_glowOuter", "Outer"));
+			glow.Add(EnumRow("m_glowQuality", "Quality"));
 
-			var bloomSec = Section(root, "BLOOM", false);
-			bloomSec.Add(BoolRow("m_bloom", "Enabled"));
+			var bloomSec = EffectSection(root, "BLOOM", "m_bloom", false);
 			bloomSec.Add(Field("m_bloomColor", "Color"));
 			bloomSec.Add(Field("m_bloomRadius", "Radius"));
 			bloomSec.Add(Field("m_bloomIntensity", "Intensity"));
@@ -138,6 +136,53 @@ namespace Sperlich.Text.EditorTools {
 			wrap.Add(body);
 			parent.Add(wrap);
 			return body;
+		}
+
+		private VisualElement EffectSection(VisualElement parent, string title, string boolProp, bool expanded) {
+			SerializedProperty p = serializedObject.FindProperty(boolProp);
+			var (header, body, _) = SperlichEditorWidgets.CreateChevronSection(title, expanded, SperlichEditorTheme.BgStep, null, nameof(SperlichTextEditor));
+			body.style.paddingLeft = 6;
+			body.style.paddingRight = 6;
+			body.style.paddingTop = 4;
+			body.style.paddingBottom = 6;
+
+			var chk = new Toggle();
+			chk.style.marginLeft = StyleKeyword.Auto;
+			chk.style.marginRight = 4;
+			chk.style.paddingTop = 0;
+			chk.style.paddingBottom = 0;
+			chk.style.marginTop = 0;
+			chk.style.marginBottom = 0;
+			chk.value = p != null && p.boolValue;
+			chk.RegisterValueChangedCallback(evt => {
+				if (p != null) {
+					p.boolValue = evt.newValue;
+					serializedObject.ApplyModifiedProperties();
+				}
+			});
+			chk.RegisterCallback<ClickEvent>(evt => evt.StopPropagation());
+			chk.RegisterCallback<PointerDownEvent>(evt => evt.StopPropagation());
+			header.Add(chk);
+
+			var paramsBox = new VisualElement { style = { marginTop = 2 } };
+			body.Add(paramsBox);
+
+			void UpdateState() {
+				bool on = p != null && p.boolValue;
+				chk.SetValueWithoutNotify(on);
+				header.style.opacity = on ? 1.0f : 0.6f;
+				paramsBox.SetEnabled(on);
+				paramsBox.style.opacity = on ? 1.0f : 0.45f;
+			}
+
+			UpdateState();
+			if (p != null) body.TrackPropertyValue(p, _ => UpdateState());
+
+			var wrap = new VisualElement { style = { marginBottom = 4 } };
+			wrap.Add(header);
+			wrap.Add(body);
+			parent.Add(wrap);
+			return paramsBox;
 		}
 
 		/// <summary>Einfaches PropertyField als Column-Zeile (gemeinsame Label-Spalte, internes Feld-Label entfernt).</summary>
@@ -201,10 +246,7 @@ namespace Sperlich.Text.EditorTools {
 				int n = listProp.arraySize;
 				listProp.arraySize = n + 1;
 				SerializedProperty e = listProp.GetArrayElementAtIndex(n);
-				e.FindPropertyRelative("Effect").enumValueIndex = (int)BuiltinEffect.Wave;
-				e.FindPropertyRelative("Amplitude").floatValue = 6f;
-				e.FindPropertyRelative("Frequency").floatValue = 0.35f;
-				e.FindPropertyRelative("Speed").floatValue = 6f;
+				ApplyBuiltinEffectDefaults(e, BuiltinEffect.Wave, forceEnable: true);
 				serializedObject.ApplyModifiedProperties();
 				Rebuild();
 			}, isAccent: true);
@@ -217,9 +259,65 @@ namespace Sperlich.Text.EditorTools {
 			return root;
 		}
 
+		/// <summary>Wendet Standardwerte für einen Built-in-Effekt an.</summary>
+		private void ApplyBuiltinEffectDefaults(SerializedProperty el, BuiltinEffect effect, bool forceEnable = false) {
+			SerializedProperty effectProp = el.FindPropertyRelative("Effect");
+			SerializedProperty enabledProp = el.FindPropertyRelative("Enabled");
+			SerializedProperty amp = el.FindPropertyRelative("Amplitude");
+			SerializedProperty freq = el.FindPropertyRelative("Frequency");
+			SerializedProperty spd = el.FindPropertyRelative("Speed");
+			SerializedProperty ca = el.FindPropertyRelative("ColorA");
+			SerializedProperty cb = el.FindPropertyRelative("ColorB");
+			SerializedProperty ramp = el.FindPropertyRelative("Ramp");
+
+			if (forceEnable) enabledProp.boolValue = true;
+			effectProp.enumValueIndex = (int)effect;
+
+			switch (effect) {
+				case BuiltinEffect.Wave:
+					amp.floatValue = 6f;
+					freq.floatValue = 0.35f;
+					spd.floatValue = 6f;
+					break;
+				case BuiltinEffect.Shake:
+					amp.floatValue = 2.5f;
+					freq.floatValue = 30f;
+					spd.floatValue = 1f;
+					break;
+				case BuiltinEffect.Pulse:
+					amp.floatValue = 0.12f;
+					freq.floatValue = 2f;
+					spd.floatValue = 4f;
+					break;
+				case BuiltinEffect.Rainbow:
+					amp.floatValue = 1f;
+					freq.floatValue = 0.04f;
+					spd.floatValue = 1.5f;
+					ramp.gradientValue = BuiltinEffectParams.CreateRainbowGradient();
+					break;
+				case BuiltinEffect.Glow:
+					amp.floatValue = 0.4f;
+					freq.floatValue = 3f;
+					spd.floatValue = 1.5f;
+					ca.colorValue = new Color(0.55f, 0.55f, 0.55f, 1f);
+					cb.colorValue = Color.white;
+					break;
+				case BuiltinEffect.Glitch:
+					amp.floatValue = 3f;
+					freq.floatValue = 12f;
+					spd.floatValue = 1f;
+					el.FindPropertyRelative("Amount").floatValue = 0.25f;
+					if (IsDefaultOrEmptyGradient(ramp.gradientValue)) {
+						ramp.gradientValue = BuiltinEffectParams.CreateRainbowGradient();
+					}
+					break;
+			}
+		}
+
 		private VisualElement BuildEffectCard(SerializedProperty listProp, int index, System.Action rebuildAll) {
 			SerializedProperty el = listProp.GetArrayElementAtIndex(index);
 			SerializedProperty effectProp = el.FindPropertyRelative("Effect");
+			SerializedProperty enabledProp = el.FindPropertyRelative("Enabled");
 
 			var card = SperlichEditorWidgets.CreateBox(4, SperlichEditorTheme.BorderSubtle);
 			card.style.backgroundColor = SperlichEditorTheme.BgStepBody;
@@ -230,9 +328,24 @@ namespace Sperlich.Text.EditorTools {
 			card.style.paddingBottom = 6;
 
 			var top = new VisualElement { style = { flexDirection = FlexDirection.Row, alignItems = Align.Center } };
-			var dd = SperlichEditorWidgets.CreateEnumDropdown(effectProp, Accent);
+
+			var pill = new PillToggle(enabledProp.boolValue);
+			pill.style.marginRight = 6;
+			pill.Clicked += () => {
+				enabledProp.boolValue = !enabledProp.boolValue;
+				serializedObject.ApplyModifiedProperties();
+				pill.SetValue(enabledProp.boolValue);
+			};
+			top.Add(pill);
+
+			var dd = SperlichEditorWidgets.CreateEnumDropdown(effectProp, Accent, newIdx => {
+				ApplyBuiltinEffectDefaults(el, (BuiltinEffect)newIdx);
+				serializedObject.ApplyModifiedProperties();
+				rebuildAll();
+			});
 			dd.style.flexGrow = 1;
 			top.Add(dd);
+
 			var del = SperlichEditorWidgets.MakeButton("✕", 22, () => {
 				listProp.DeleteArrayElementAtIndex(index);
 				serializedObject.ApplyModifiedProperties();
@@ -246,6 +359,16 @@ namespace Sperlich.Text.EditorTools {
 			PopulateEffectParams(paramHost, el, (BuiltinEffect)effectProp.enumValueIndex);
 			card.Add(paramHost);
 
+			void UpdateDisabledStyle() {
+				paramHost.style.opacity = enabledProp.boolValue ? 1f : 0.45f;
+				paramHost.SetEnabled(enabledProp.boolValue);
+			}
+			UpdateDisabledStyle();
+			card.TrackPropertyValue(enabledProp, sp => {
+				pill.SetValue(sp.boolValue);
+				UpdateDisabledStyle();
+			});
+
 			// changing the effect type reshapes the whole list (fresh dropdown label + fields)
 			card.TrackPropertyValue(effectProp, _ => rebuildAll());
 			return card;
@@ -253,11 +376,11 @@ namespace Sperlich.Text.EditorTools {
 
 		/// <summary>"Color Ramp"-Zeile: ein direkt gebundenes <see cref="GradientField"/> (das PropertyField
 		/// für einen Gradient in einem verschachtelten Array-Element rendert oft leer). Leerer/1-Key-Gradient
-		/// wird einmalig mit einem Regenbogen vorbelegt.</summary>
+		/// oder unveränderter Standard-Gradient wird einmalig mit einem Regenbogen vorbelegt.</summary>
 		private VisualElement RampRow(SerializedProperty ramp) {
 			Gradient cur = ramp.gradientValue;
-			if (cur == null || cur.colorKeys == null || cur.colorKeys.Length < 2) {
-				ramp.gradientValue = RainbowGradient();
+			if (IsDefaultOrEmptyGradient(cur)) {
+				ramp.gradientValue = BuiltinEffectParams.CreateRainbowGradient();
 				serializedObject.ApplyModifiedProperties();
 			}
 			var gf = new UnityEditor.UIElements.GradientField { style = { flexGrow = 1 } };
@@ -266,20 +389,49 @@ namespace Sperlich.Text.EditorTools {
 			return effectCol.Row("Color Ramp", gf);
 		}
 
-		private static Gradient RainbowGradient() {
-			var g = new Gradient();
-			g.SetKeys(
-				new[] {
-					new GradientColorKey(Color.red, 0f),
-					new GradientColorKey(new Color(1f, 0.5f, 0f), 1f / 6f),
-					new GradientColorKey(Color.yellow, 2f / 6f),
-					new GradientColorKey(Color.green, 3f / 6f),
-					new GradientColorKey(Color.cyan, 4f / 6f),
-					new GradientColorKey(Color.blue, 5f / 6f),
-					new GradientColorKey(Color.magenta, 1f),
-				},
-				new[] { new GradientAlphaKey(1f, 0f), new GradientAlphaKey(1f, 1f) });
-			return g;
+		/// <summary>Prüft, ob ein Gradient leer, null oder der 2-farbige Standard-Weiß-Gradient von Unity ist.</summary>
+		private static bool IsDefaultOrEmptyGradient(Gradient cur) {
+			if (cur == null || cur.colorKeys == null || cur.colorKeys.Length < 2) return true;
+			if (cur.colorKeys.Length == 2 &&
+			    cur.colorKeys[0].color == Color.white &&
+			    cur.colorKeys[1].color == Color.white) {
+				return true;
+			}
+			return false;
+		}
+
+		/// <summary>"Color"-Zeile: ein direkt gebundenes <see cref="ColorField"/> für verschachtelte Array-Elemente.</summary>
+		private VisualElement ColorRow(SerializedProperty colorProp, string label) {
+			var cf = new UnityEditor.UIElements.ColorField { style = { flexGrow = 1 }, showAlpha = true };
+			cf.BindProperty(colorProp);
+			SperlichFieldColumn.HideInternalLabel(cf);
+			return effectCol.Row(label, cf);
+		}
+
+		/// <summary>"Percent Slider"-Zeile: Slider von 0..1 mit Prozentanzeige (0..100%).</summary>
+		private VisualElement PercentSliderRow(SerializedProperty prop, string label) {
+			var row = new VisualElement { style = { flexDirection = FlexDirection.Row, alignItems = Align.Center, flexGrow = 1 } };
+			var slider = new Slider(0f, 1f) { style = { flexGrow = 1 } };
+			slider.BindProperty(prop);
+			SperlichFieldColumn.HideInternalLabel(slider);
+
+			var percentLabel = new Label {
+				style = {
+					width = 42,
+					fontSize = 11,
+					unityTextAlign = TextAnchor.MiddleRight,
+					color = SperlichEditorTheme.TextSecondary,
+					marginLeft = 4
+				}
+			};
+
+			void UpdateText() => percentLabel.text = $"{Mathf.RoundToInt(Mathf.Clamp01(prop.floatValue) * 100f)} %";
+			UpdateText();
+			row.TrackPropertyValue(prop, _ => UpdateText());
+
+			row.Add(slider);
+			row.Add(percentLabel);
+			return effectCol.Row(label, row);
 		}
 
 		private void PopulateEffectParams(VisualElement host, SerializedProperty el, BuiltinEffect effect) {
@@ -311,14 +463,15 @@ namespace Sperlich.Text.EditorTools {
 					host.Add(RampRow(ramp));
 					break;
 				case BuiltinEffect.Glow:
-					host.Add(effectCol.Property(ca, "Color A"));
-					host.Add(effectCol.Property(cb, "Color B"));
+					host.Add(ColorRow(ca, "Color A"));
+					host.Add(ColorRow(cb, "Color B"));
 					host.Add(effectCol.Property(freq, "Fade Sharpness"));
 					host.Add(effectCol.Property(spd, "Fade Speed"));
 					break;
 				case BuiltinEffect.Glitch:
 					host.Add(effectCol.Property(amp, "Shake Distance"));
 					host.Add(effectCol.Property(freq, "Glitch Rate"));
+					host.Add(PercentSliderRow(el.FindPropertyRelative("Amount"), "Glitch Amount"));
 					host.Add(effectCol.Property(spd, "Color Cycle"));
 					host.Add(RampRow(ramp));
 					break;
@@ -340,18 +493,18 @@ namespace Sperlich.Text.EditorTools {
 
 		// ============================ icon-button enum ========================================
 
-		/// <summary>Word-processor style icon toggle row for a small enum property.</summary>
-		private static VisualElement AlignButtons(SerializedProperty enumProp, string[] icons, string[] tips) {
+		/// <summary>Word-processor style icon toggle row for a small enum property drawn with Painter2D.</summary>
+		private static VisualElement AlignButtons(SerializedProperty enumProp, bool isVertical, string[] tips) {
 			var bar = new VisualElement { style = { flexDirection = FlexDirection.Row } };
-			int n = Mathf.Min(icons.Length, tips.Length);
+			int n = tips.Length;
 			var btns = new VisualElement[n];
-			string[] fallback = { "T", "M", "B", "L", "C", "R", "J", "F", "G" };
 
 			void Refresh() {
 				for (int i = 0; i < n; i++) {
 					bool on = enumProp.enumValueIndex == i;
 					btns[i].style.backgroundColor = on ? new Color(Accent.r, Accent.g, Accent.b, 0.16f) : SperlichEditorTheme.ButtonBg;
 					SperlichEditorWidgets.SetBorderColor(btns[i], on ? Accent : SperlichEditorTheme.ButtonBorder);
+					btns[i].MarkDirtyRepaint();
 				}
 			}
 
@@ -370,12 +523,88 @@ namespace Sperlich.Text.EditorTools {
 				SperlichEditorWidgets.SetRadius(b, 3);
 				SperlichEditorWidgets.SetHoverCursor(b, MouseCursor.Link);
 
-				Texture ic = EditorGUIUtility.IconContent(icons[i])?.image;
-				if (ic != null) {
-					b.Add(new Image { image = ic, scaleMode = ScaleMode.ScaleToFit, pickingMode = PickingMode.Ignore, style = { width = 14, height = 14 } });
-				} else {
-					b.Add(new Label(idx < fallback.Length ? fallback[idx] : "?") { pickingMode = PickingMode.Ignore, style = { fontSize = 10, color = SperlichEditorTheme.TextSecondary } });
-				}
+				b.generateVisualContent += mgc => {
+					Painter2D p = mgc.painter2D;
+					bool on = enumProp.enumValueIndex == idx;
+					Color stroke = on ? Accent : SperlichEditorTheme.TextSecondary;
+					p.strokeColor = stroke;
+					p.lineWidth = 1.3f;
+					p.lineCap = LineCap.Round;
+
+					void Line(float x1, float y1, float x2, float y2) {
+						p.BeginPath();
+						p.MoveTo(new Vector2(x1, y1));
+						p.LineTo(new Vector2(x2, y2));
+						p.Stroke();
+					}
+
+					if (!isVertical) {
+						switch (idx) {
+							case 0: // Left
+								Line(7f, 6f, 19f, 6f);
+								Line(7f, 10f, 14f, 10f);
+								Line(7f, 14f, 17f, 14f);
+								break;
+							case 1: // Center
+								Line(7f, 6f, 19f, 6f);
+								Line(10f, 10f, 16f, 10f);
+								Line(8.5f, 14f, 17.5f, 14f);
+								break;
+							case 2: // Right
+								Line(7f, 6f, 19f, 6f);
+								Line(12f, 10f, 19f, 10f);
+								Line(9f, 14f, 19f, 14f);
+								break;
+							case 3: // Justified
+								Line(7f, 6f, 19f, 6f);
+								Line(7f, 10f, 19f, 10f);
+								Line(7f, 14f, 13f, 14f);
+								break;
+							case 4: // Flush
+								Line(7f, 6f, 19f, 6f);
+								Line(7f, 10f, 19f, 10f);
+								Line(7f, 14f, 19f, 14f);
+								break;
+							case 5: // Geometry Center
+								Line(8f, 6f, 18f, 6f);
+								Line(10f, 10f, 16f, 10f);
+								Line(8f, 14f, 18f, 14f);
+								Line(13f, 3.5f, 13f, 5f);
+								Line(13f, 15f, 13f, 16.5f);
+								break;
+						}
+					} else {
+						switch (idx) {
+							case 0: // Top
+								p.lineWidth = 1.6f;
+								Line(7f, 5.5f, 19f, 5.5f);
+								p.lineWidth = 1.3f;
+								Line(10f, 8f, 10f, 15f);
+								Line(16f, 8f, 16f, 12f);
+								break;
+							case 1: // Middle
+								Line(8f, 6f, 18f, 6f);
+								Line(7f, 10f, 19f, 10f);
+								Line(8f, 14f, 18f, 14f);
+								break;
+							case 2: // Bottom
+								p.lineWidth = 1.6f;
+								Line(7f, 14.5f, 19f, 14.5f);
+								p.lineWidth = 1.3f;
+								Line(10f, 5f, 10f, 12f);
+								Line(16f, 8f, 16f, 12f);
+								break;
+							case 3: // Baseline
+								p.lineWidth = 1.0f;
+								Line(6f, 14.5f, 20f, 14.5f);
+								p.lineWidth = 1.3f;
+								Line(9f, 13f, 13f, 6f);
+								Line(13f, 6f, 17f, 13f);
+								Line(11f, 10.5f, 15f, 10.5f);
+								break;
+						}
+					}
+				};
 
 				b.RegisterCallback<ClickEvent>(_ => {
 					enumProp.enumValueIndex = idx;

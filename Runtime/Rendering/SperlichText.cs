@@ -6,6 +6,7 @@ using UnityEngine;
 using UnityEngine.UI;
 
 namespace Sperlich.Text {
+	public enum BlurQuality { Low = 12, Medium = 24, High = 48 }
 
 	/// <summary>
 	/// TextMeshPro-style label for uGUI, built on the Sperlich text pipeline: no font-asset bake step,
@@ -51,21 +52,30 @@ namespace Sperlich.Text {
 		[SerializeField, Range(-0.5f, 0.5f)] private float m_faceDilate = 0f;
 		[SerializeField, Range(0f, 2f)] private float m_sharpness = 1f;
 
+		[SerializeField] private bool m_outline = false;
 		[SerializeField] private Color m_outlineColor = Color.black;
-		[SerializeField, Range(0f, 0.5f)] private float m_outlineWidth = 0f;
+		[Tooltip("Outline width in UI pixels.")]
+		[SerializeField, Range(0f, 32f)] private float m_outlineWidth = 2f;
 		[SerializeField] private TextOutlinePlacement m_outlineMode = TextOutlinePlacement.Outer; // enum index 2
 
+		[SerializeField] private bool m_shadow = false;
 		[SerializeField] private Color m_shadowColor = new Color(0f, 0f, 0f, 0.5f);
-		[SerializeField] private Vector2 m_shadowOffset = new Vector2(0.05f, -0.05f);
-		[SerializeField, Range(0f, 0.5f)] private float m_shadowSoftness = 0.05f;
-		[SerializeField, Range(-0.5f, 0.5f)] private float m_shadowDilate = 0f;
+		[Tooltip("Offset in UI pixels.")]
+		[SerializeField] private Vector2 m_shadowOffset = new Vector2(2f, -2f);
+		[Tooltip("Blur softness radius in UI pixels.")]
+		[SerializeField, Range(0f, 10f)] private float m_shadowSoftness = 4f;
+		[Tooltip("Thickens or thins the shadow shape before blurring.")]
+		[SerializeField, Range(0f, 1f)] private float m_shadowDilate = 0f;
+		[SerializeField] private BlurQuality m_shadowQuality = BlurQuality.Medium;
 
+		[SerializeField] private bool m_glow = false;
 		[SerializeField] private Color m_glowColor = new Color(0.3f, 0.6f, 1f, 1f);
-		[SerializeField, Range(0f, 1f)] private float m_glowPower = 0f;
+		[SerializeField, Range(0f, 1f)] private float m_glowPower = 0.5f;
 		[SerializeField, Range(0f, 0.5f)] private float m_glowOuter = 0.25f;
+		[SerializeField] private BlurQuality m_glowQuality = BlurQuality.Medium;
 
 		// Component-wide bloom: the per-glyph ring-blur (same path as the <bloom> tag) for the whole label.
-		[SerializeField] private bool m_bloom;
+		[SerializeField] private bool m_bloom = false;
 		[SerializeField] private Color m_bloomColor = new Color(1f, 0.55f, 0.2f, 1f);
 		[SerializeField, Range(0f, 1f)] private float m_bloomRadius = 1f;
 		[SerializeField, Range(0f, 4f)] private float m_bloomIntensity = 2f;
@@ -125,6 +135,87 @@ namespace Sperlich.Text {
 			set { if (m_bloom != value) { m_bloom = value; SetVerticesDirty(); } }
 		}
 
+		/// <summary>Enables the component-level outline.</summary>
+		public bool Outline {
+			get => m_outline;
+			set { if (m_outline != value) { m_outline = value; SetMaterialDirty(); SetVerticesDirty(); } }
+		}
+
+		/// <summary>Color of the component-level outline.</summary>
+		public Color OutlineColor {
+			get => m_outlineColor;
+			set { if (m_outlineColor != value) { m_outlineColor = value; SetMaterialDirty(); } }
+		}
+
+		/// <summary>Outline width in UI pixels.</summary>
+		public float OutlineWidth {
+			get => m_outlineWidth;
+			set {
+				float clamped = Mathf.Max(0f, value);
+				if (!Mathf.Approximately(m_outlineWidth, clamped)) { m_outlineWidth = clamped; SetMaterialDirty(); SetVerticesDirty(); }
+			}
+		}
+
+		/// <summary>Placement mode of the component-level outline (Inner, Middle, Outer).</summary>
+		public TextOutlinePlacement OutlineMode {
+			get => m_outlineMode;
+			set { if (m_outlineMode != value) { m_outlineMode = value; SetMaterialDirty(); } }
+		}
+
+		/// <summary>Enables the component-level drop shadow.</summary>
+		public bool Shadow {
+			get => m_shadow;
+			set { if (m_shadow != value) { m_shadow = value; SetVerticesDirty(); } }
+		}
+
+		/// <summary>Enables the component-level glow.</summary>
+		public bool Glow {
+			get => m_glow;
+			set { if (m_glow != value) { m_glow = value; SetMaterialDirty(); SetVerticesDirty(); } }
+		}
+
+		/// <summary>Color and alpha of the component-level drop shadow.</summary>
+		public Color ShadowColor {
+			get => m_shadowColor;
+			set { if (m_shadowColor != value) { m_shadowColor = value; SetVerticesDirty(); } }
+		}
+
+		/// <summary>Offset of the component-level drop shadow in UI pixels.</summary>
+		public Vector2 ShadowOffset {
+			get => m_shadowOffset;
+			set { if (m_shadowOffset != value) { m_shadowOffset = value; SetVerticesDirty(); } }
+		}
+
+		/// <summary>Softness blur radius of the component-level drop shadow in UI pixels.</summary>
+		public float ShadowSoftness {
+			get => m_shadowSoftness;
+			set {
+				float clamped = Mathf.Clamp(value, 0f, 10f);
+				if (!Mathf.Approximately(m_shadowSoftness, clamped)) { m_shadowSoftness = clamped; SetVerticesDirty(); }
+			}
+		}
+
+		/// <summary>Dilation of the component-level drop shadow.</summary>
+		public float ShadowDilate {
+			get => m_shadowDilate;
+			set {
+				float clamped = Mathf.Clamp01(value);
+				if (!Mathf.Approximately(m_shadowDilate, clamped)) { m_shadowDilate = clamped; SetVerticesDirty(); }
+			}
+		}
+
+		/// <summary>Sample count for the shadow blur.</summary>
+		public BlurQuality ShadowQuality {
+			get => m_shadowQuality;
+			set { if (m_shadowQuality != value) { m_shadowQuality = value; SetMaterialDirty(); } }
+		}
+
+		/// <summary>Sample count for the glow blur.</summary>
+		public BlurQuality GlowQuality {
+			get => m_glowQuality;
+			set { if (m_glowQuality != value) { m_glowQuality = value; SetMaterialDirty(); } }
+		}
+
 		/// <summary>Inner padding (left, right, top, bottom) between the RectTransform and the text box, in local units.</summary>
 		public Vector4 Margins {
 			get => new Vector4(m_marginLeft, m_marginRight, m_marginTop, m_marginBottom);
@@ -141,6 +232,109 @@ namespace Sperlich.Text {
 		public LayoutResult CurrentLayout => layout;
 		public MarkupResult CurrentMarkup => markup;
 		public Vector2 MeasuredSize => layout != null ? new Vector2(layout.Size.x, layout.Size.y) : Vector2.zero;
+
+		/// <summary>Gibt eine schreibgeschützte Liste aller konfigurierten Built-in-Effekte zurück.</summary>
+		public IReadOnlyList<BuiltinEffectParams> BuiltinEffects => m_builtinEffects;
+
+		/// <summary>Fügt einen konfigurierten Built-in-Effekt hinzu.</summary>
+		public void AddBuiltinEffect(BuiltinEffectParams effectParams) {
+			m_builtinEffects.Add(effectParams);
+			SyncBuiltinEffects();
+			SetVerticesDirty();
+		}
+
+		/// <summary>Fügt einen Built-in-Effekt mit Standardwerten hinzu.</summary>
+		public void AddBuiltinEffect(BuiltinEffect effect) {
+			BuiltinEffectParams p = effect switch {
+				BuiltinEffect.Wave => BuiltinEffectParams.Wave,
+				BuiltinEffect.Shake => BuiltinEffectParams.Shake,
+				BuiltinEffect.Pulse => BuiltinEffectParams.Pulse,
+				BuiltinEffect.Rainbow => BuiltinEffectParams.Rainbow,
+				BuiltinEffect.Glow => BuiltinEffectParams.Glow,
+				BuiltinEffect.Glitch => BuiltinEffectParams.Glitch,
+				_ => new BuiltinEffectParams { Enabled = true, Effect = effect }
+			};
+			AddBuiltinEffect(p);
+		}
+
+		/// <summary>Entfernt den Built-in-Effekt am angegebenen Index.</summary>
+		public bool RemoveBuiltinEffect(int index) {
+			if (index < 0 || index >= m_builtinEffects.Count) return false;
+			m_builtinEffects.RemoveAt(index);
+			SyncBuiltinEffects();
+			SetVerticesDirty();
+			return true;
+		}
+
+		/// <summary>Entfernt den ersten Built-in-Effekt des angegebenen Typs.</summary>
+		public bool RemoveBuiltinEffect(BuiltinEffect effect) {
+			for (int i = 0; i < m_builtinEffects.Count; i++) {
+				if (m_builtinEffects[i].Effect == effect) {
+					m_builtinEffects.RemoveAt(i);
+					SyncBuiltinEffects();
+					SetVerticesDirty();
+					return true;
+				}
+			}
+			return false;
+		}
+
+		/// <summary>Entfernt alle konfigurierten Built-in-Effekte.</summary>
+		public void ClearBuiltinEffects() {
+			m_builtinEffects.Clear();
+			SyncBuiltinEffects();
+			SetVerticesDirty();
+		}
+
+		/// <summary>Aktiviert oder deaktiviert den Built-in-Effekt am angegebenen Index.</summary>
+		public bool SetBuiltinEffectEnabled(int index, bool enabled) {
+			if (index < 0 || index >= m_builtinEffects.Count) return false;
+			BuiltinEffectParams p = m_builtinEffects[index];
+			p.Enabled = enabled;
+			m_builtinEffects[index] = p;
+			SyncBuiltinEffects();
+			SetVerticesDirty();
+			return true;
+		}
+
+		/// <summary>Aktiviert oder deaktiviert alle Built-in-Effekte des angegebenen Typs.</summary>
+		public bool SetBuiltinEffectEnabled(BuiltinEffect effect, bool enabled) {
+			bool changed = false;
+			for (int i = 0; i < m_builtinEffects.Count; i++) {
+				if (m_builtinEffects[i].Effect == effect) {
+					BuiltinEffectParams p = m_builtinEffects[i];
+					p.Enabled = enabled;
+					m_builtinEffects[i] = p;
+					changed = true;
+				}
+			}
+			if (changed) {
+				SyncBuiltinEffects();
+				SetVerticesDirty();
+			}
+			return changed;
+		}
+
+		/// <summary>Aktualisiert die Parameter des Built-in-Effekts am angegebenen Index.</summary>
+		public bool SetBuiltinEffect(int index, BuiltinEffectParams effectParams) {
+			if (index < 0 || index >= m_builtinEffects.Count) return false;
+			m_builtinEffects[index] = effectParams;
+			SyncBuiltinEffects();
+			SetVerticesDirty();
+			return true;
+		}
+
+		/// <summary>Sucht nach dem ersten Built-in-Effekt des angegebenen Typs.</summary>
+		public bool TryGetBuiltinEffect(BuiltinEffect effect, out BuiltinEffectParams effectParams) {
+			for (int i = 0; i < m_builtinEffects.Count; i++) {
+				if (m_builtinEffects[i].Effect == effect) {
+					effectParams = m_builtinEffects[i];
+					return true;
+				}
+			}
+			effectParams = default;
+			return false;
+		}
 
 		public override Texture mainTexture => store != null && store.AtlasTexture != null ? store.AtlasTexture : base.mainTexture;
 
@@ -365,7 +559,7 @@ namespace Sperlich.Text {
 			string perGlyph = "";
 			if (store != null && layout != null && meshBuilder != null) {
 				originOffset = ContentOrigin();
-				meshBuilder.Build(layout, store, markup.Spans, new Vector2(originOffset.x, originOffset.y), color, editingRects, BuildBloom());
+				meshBuilder.Build(layout, store, markup.Spans, new Vector2(originOffset.x, originOffset.y), color, editingRects, BuildBloom(), BuildComponentShadow(), CalculateExtraPadding());
 				int shown = 0;
 				for (int i = 0; i < layout.Glyphs.Count && shown < 4; i++) {
 					PositionedGlyph g = layout.Glyphs[i];
@@ -401,7 +595,7 @@ namespace Sperlich.Text {
 		public bool HasAnimatedEffects {
 			get {
 				for (int i = 0; i < m_builtinEffects.Count; i++)
-					if (m_builtinEffects[i].Effect != BuiltinEffect.None) return true;
+					if (m_builtinEffects[i].Enabled && m_builtinEffects[i].Effect != BuiltinEffect.None) return true;
 				if (m_typewriter) return true;
 				return meshBuilder != null && meshBuilder.HasSpanEffects;
 			}
@@ -431,8 +625,9 @@ namespace Sperlich.Text {
 			if (layout == null || layout.Glyphs.Count == 0) return;
 
 			originOffset = ContentOrigin();
-			meshBuilder.Build(layout, store, markup.Spans, new Vector2(originOffset.x, originOffset.y), color, editingRects, BuildBloom());
+			meshBuilder.Build(layout, store, markup.Spans, new Vector2(originOffset.x, originOffset.y), color, editingRects, BuildBloom(), BuildComponentShadow(), CalculateExtraPadding());
 
+			SyncBuiltinEffects();
 			if (effects.HasWork || meshBuilder.HasSpanEffects) {
 				effects.Apply(meshBuilder,
 					Application.isPlaying ? SperlichTextClock.Time : Time.realtimeSinceStartup,
@@ -470,15 +665,17 @@ namespace Sperlich.Text {
 			runtimeMaterial.SetFloat("_FaceDilate", m_faceDilate);
 			runtimeMaterial.SetFloat("_Sharpness", m_sharpness);
 			runtimeMaterial.SetColor("_OutlineColor", m_outlineColor);
-			runtimeMaterial.SetFloat("_OutlineWidth", m_outlineWidth);
+			runtimeMaterial.SetFloat("_OutlineWidth", m_outline ? m_outlineWidth : 0f);
 			runtimeMaterial.SetFloat("_OutlineMode", (float)(int)m_outlineMode);
-			runtimeMaterial.SetColor("_UnderlayColor", m_shadowColor);
+			runtimeMaterial.SetColor("_UnderlayColor", m_shadow ? m_shadowColor : Color.clear);
 			runtimeMaterial.SetVector("_UnderlayOffset",
 				new Vector4(m_shadowOffset.x, m_shadowOffset.y, Mathf.Max(0.0001f, m_shadowSoftness), 0f));
 			runtimeMaterial.SetFloat("_UnderlayDilate", m_shadowDilate);
+			runtimeMaterial.SetFloat("_ShadowTaps", (float)m_shadowQuality);
 			runtimeMaterial.SetColor("_GlowColor", m_glowColor);
-			runtimeMaterial.SetFloat("_GlowPower", m_glowPower);
+			runtimeMaterial.SetFloat("_GlowPower", m_glow ? m_glowPower : 0f);
 			runtimeMaterial.SetFloat("_GlowOuter", m_glowOuter);
+			runtimeMaterial.SetFloat("_GlowTaps", (float)m_glowQuality);
 
 			// MTSDF sampling is a shader keyword: only when the bound font asks for it AND the store's
 			// backend actually serves an MTSDF atlas (a fell-back FontAccess still reports SDF).
@@ -552,6 +749,16 @@ namespace Sperlich.Text {
 			};
 		}
 
+		private TextMeshBuilder.ComponentShadow BuildComponentShadow() {
+			return new TextMeshBuilder.ComponentShadow {
+				Enabled = m_shadow && m_shadowColor.a > 0f,
+				Color = new float4(m_shadowColor.r, m_shadowColor.g, m_shadowColor.b, m_shadowColor.a),
+				Offset = new float2(m_shadowOffset.x, m_shadowOffset.y),
+				Softness = m_shadowSoftness,
+				Dilate = m_shadowDilate
+			};
+		}
+
 		/// <summary>Layout-box size after subtracting the margins from the RectTransform rect (never negative).</summary>
 		private Vector2 ContentRectSize(Vector2 full) => new Vector2(
 			Mathf.Max(0f, full.x - m_marginLeft - m_marginRight),
@@ -561,6 +768,29 @@ namespace Sperlich.Text {
 		private float2 ContentOrigin() {
 			Rect r = rectTransform.rect;
 			return new float2(r.xMin + m_marginLeft, r.yMax - m_marginTop);
+		}
+
+		/// <summary>Calculates required padding in atlas pixels for effects so quads do not clip.</summary>
+		private float CalculateExtraPadding() {
+			float pad = 0f;
+			float samplePx = store != null && store.Fonts != null && store.Fonts.PrimaryMetrics.SamplingPointSize > 0
+				? store.Fonts.PrimaryMetrics.SamplingPointSize
+				: (boundFont != null ? boundFont.samplingPointSize : 90f);
+			float fontSize = m_fontSize > 0 ? m_fontSize : 36f;
+			float pxToAtlas = samplePx / fontSize;
+
+			if (m_outline && m_outlineWidth > 0f) {
+				pad = Mathf.Max(pad, m_outlineWidth * pxToAtlas * 1.5f);
+			}
+			if (m_shadow && m_shadowColor.a > 0f) {
+				float shadowDist = Mathf.Max(Mathf.Abs(m_shadowOffset.x), Mathf.Abs(m_shadowOffset.y)) * pxToAtlas;
+				shadowDist += m_shadowSoftness * pxToAtlas * 1.5f;
+				pad = Mathf.Max(pad, shadowDist);
+			}
+			if (m_glow && m_glowPower > 0f) {
+				pad = Mathf.Max(pad, m_glowOuter * samplePx);
+			}
+			return pad + 16f;
 		}
 
 		private void RunLayout() {
@@ -614,7 +844,9 @@ namespace Sperlich.Text {
 		private void SyncBuiltinEffects() {
 			effects.ClearBuiltins();
 			for (int i = 0; i < m_builtinEffects.Count; i++) {
-				if (m_builtinEffects[i].Effect != BuiltinEffect.None) effects.AddBuiltin(m_builtinEffects[i]);
+				if (m_builtinEffects[i].Enabled && m_builtinEffects[i].Effect != BuiltinEffect.None) {
+					effects.AddBuiltin(m_builtinEffects[i]);
+				}
 			}
 		}
 

@@ -33,6 +33,9 @@ namespace Sperlich.Text.Rasterizer {
 		private Vector2 p;
 		private readonly int[] windings;
 		private readonly TSel[] edgeSelectors;
+		private readonly TSel shapeEdgeSelector = new TSel();
+		private readonly TSel innerEdgeSelector = new TSel();
+		private readonly TSel outerEdgeSelector = new TSel();
 
 		public OverlappingContourCombiner(Shape shape) {
 			int n = shape.Contours.Count;
@@ -54,9 +57,9 @@ namespace Sperlich.Text.Rasterizer {
 
 		public TDist Distance() {
 			int contourCount = edgeSelectors.Length;
-			TSel shapeEdgeSelector = new TSel();
-			TSel innerEdgeSelector = new TSel();
-			TSel outerEdgeSelector = new TSel();
+			shapeEdgeSelector.Clear();
+			innerEdgeSelector.Clear();
+			outerEdgeSelector.Clear();
 			shapeEdgeSelector.Reset(p);
 			innerEdgeSelector.Reset(p);
 			outerEdgeSelector.Reset(p);

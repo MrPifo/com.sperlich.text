@@ -196,8 +196,7 @@ namespace Sperlich.Text.Rasterizer {
 				double b = 3 * DotProduct(ab, br);
 				double c = 2 * DotProduct(ab, ab) + DotProduct(qa, br);
 				double d = DotProduct(qa, ab);
-				double[] t = new double[3];
-				int solutions = EquationSolver.SolveCubic(t, a, b, c, d);
+				EquationSolver.Roots3 roots = EquationSolver.SolveCubicNoAlloc(a, b, c, d);
 
 				Vector2 epDir = Direction(0);
 				double minDistance = NonZeroSign(CrossProduct(epDir, qa)) * qa.Length; // distance from A
@@ -210,13 +209,14 @@ namespace Sperlich.Text.Rasterizer {
 						param = DotProduct(origin - p[1], epDir) / DotProduct(epDir, epDir);
 					}
 				}
-				for (int i = 0; i < solutions; ++i) {
-					if (t[i] > 0 && t[i] < 1) {
-						Vector2 qe = qa + 2 * t[i] * ab + t[i] * t[i] * br;
+				for (int i = 0; i < roots.count; ++i) {
+					double ti = (i == 0) ? roots.r0 : ((i == 1) ? roots.r1 : roots.r2);
+					if (ti > 0 && ti < 1) {
+						Vector2 qe = qa + 2 * ti * ab + ti * ti * br;
 						double distance = qe.Length;
 						if (distance <= Math.Abs(minDistance)) {
-							minDistance = NonZeroSign(CrossProduct(ab + t[i] * br, qe)) * distance;
-							param = t[i];
+							minDistance = NonZeroSign(CrossProduct(ab + ti * br, qe)) * distance;
+							param = ti;
 						}
 					}
 				}
@@ -241,13 +241,14 @@ namespace Sperlich.Text.Rasterizer {
 				{
 					Vector2 ab = p[1] - p[0];
 					Vector2 br = p[2] - p[1] - ab;
-					double[] t = new double[2];
-					int solutions = EquationSolver.SolveQuadratic(t, br.y, 2 * ab.y, p[0].y - y);
-					if (solutions >= 2 && t[0] > t[1]) (t[0], t[1]) = (t[1], t[0]);
-					for (int i = 0; i < solutions && total < 2; ++i) {
-						if (t[i] >= 0 && t[i] <= 1) {
-							x[total] = p[0].x + 2 * t[i] * ab.x + t[i] * t[i] * br.x;
-							if (nextDY * (ab.y + t[i] * br.y) >= 0) {
+					EquationSolver.Roots3 roots = EquationSolver.SolveQuadraticNoAlloc(br.y, 2 * ab.y, p[0].y - y);
+					double t0 = roots.r0, t1 = roots.r1;
+					if (roots.count >= 2 && t0 > t1) (t0, t1) = (t1, t0);
+					for (int i = 0; i < roots.count && total < 2; ++i) {
+						double ti = (i == 0) ? t0 : t1;
+						if (ti >= 0 && ti <= 1) {
+							x[total] = p[0].x + 2 * ti * ab.x + ti * ti * br.x;
+							if (nextDY * (ab.y + ti * br.y) >= 0) {
 								dy[total++] = nextDY;
 								nextDY = -nextDY;
 							}
@@ -419,19 +420,20 @@ namespace Sperlich.Text.Rasterizer {
 					Vector2 ab = p[1] - p[0];
 					Vector2 br = p[2] - p[1] - ab;
 					Vector2 as_ = (p[3] - p[2]) - (p[2] - p[1]) - br;
-					double[] t = new double[3];
-					int solutions = EquationSolver.SolveCubic(t, as_.y, 3 * br.y, 3 * ab.y, p[0].y - y);
-					if (solutions >= 2) {
-						if (t[0] > t[1]) (t[0], t[1]) = (t[1], t[0]);
-						if (solutions >= 3 && t[1] > t[2]) {
-							(t[1], t[2]) = (t[2], t[1]);
-							if (t[0] > t[1]) (t[0], t[1]) = (t[1], t[0]);
+					EquationSolver.Roots3 roots = EquationSolver.SolveCubicNoAlloc(as_.y, 3 * br.y, 3 * ab.y, p[0].y - y);
+					double t0 = roots.r0, t1 = roots.r1, t2 = roots.r2;
+					if (roots.count >= 2) {
+						if (t0 > t1) (t0, t1) = (t1, t0);
+						if (roots.count >= 3 && t1 > t2) {
+							(t1, t2) = (t2, t1);
+							if (t0 > t1) (t0, t1) = (t1, t0);
 						}
 					}
-					for (int i = 0; i < solutions && total < 3; ++i) {
-						if (t[i] >= 0 && t[i] <= 1) {
-							x[total] = p[0].x + 3 * t[i] * ab.x + 3 * t[i] * t[i] * br.x + t[i] * t[i] * t[i] * as_.x;
-							if (nextDY * (ab.y + 2 * t[i] * br.y + t[i] * t[i] * as_.y) >= 0) {
+					for (int i = 0; i < roots.count && total < 3; ++i) {
+						double ti = (i == 0) ? t0 : ((i == 1) ? t1 : t2);
+						if (ti >= 0 && ti <= 1) {
+							x[total] = p[0].x + 3 * ti * ab.x + 3 * ti * ti * br.x + ti * ti * ti * as_.x;
+							if (nextDY * (ab.y + 2 * ti * br.y + ti * ti * as_.y) >= 0) {
 								dy[total++] = nextDY;
 								nextDY = -nextDY;
 							}
