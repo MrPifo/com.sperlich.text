@@ -22,6 +22,9 @@ Shader "Sperlich/Text SDF"
         _GlowOuter ("Glow Outer", Range(0,0.5)) = 0.25
         _GlowTaps ("Glow Taps", Float) = 24
 
+        _BloomFalloff ("Bloom Falloff", Range(0.1,5)) = 1.7
+        _BloomTaps ("Bloom Taps", Float) = 24
+
         _StencilComp ("Stencil Comparison", Float) = 8
         _Stencil ("Stencil ID", Float) = 0
         _StencilOp ("Stencil Operation", Float) = 0
@@ -80,6 +83,7 @@ Shader "Sperlich/Text SDF"
                 float4 color    : COLOR;
                 float4 uv0      : TEXCOORD0; // xy = atlas uv, z = sdf scale, w = weight bias
                 float4 uv1      : TEXCOORD1;
+                float4 uv2      : TEXCOORD2; // cellRect: (u0, v0, u1, v1)
                 UNITY_VERTEX_INPUT_INSTANCE_ID
             };
 
@@ -111,6 +115,8 @@ Shader "Sperlich/Text SDF"
             float _GlowPower;
             float _GlowOuter;
             float _GlowTaps;
+            float _BloomFalloff;
+            float _BloomTaps;
             float4 _ClipRect;
 
             v2f vert(appdata_t v)
@@ -122,7 +128,7 @@ Shader "Sperlich/Text SDF"
                 o.vertex = UnityObjectToClipPos(v.vertex);
                 o.uv0 = float4(TRANSFORM_TEX(v.uv0.xy, _MainTex), v.uv0.z, v.uv0.w);
                 o.uv1 = v.uv1;
-                o.cellRect = v.tangent;
+                o.cellRect = v.uv2;
                 o.color = v.color * _Color;
                 return o;
             }
@@ -131,40 +137,37 @@ Shader "Sperlich/Text SDF"
             // sharp corners a single-channel SDF rounds off.
             float median3(float3 c) { return max(min(c.r, c.g), min(max(c.r, c.g), c.b)); }
 
-            // raw-SDF value -> coverage, anti-aliased in screen space via screen-space derivatives.
-            // `dist` is (sampled_field - 0.5 + dilate + bias); `threshold` shifts the edge outward
-            // for the outline bands. fwidth(dist) is the per-screen-pixel change of the field at this
-            // fragment, so (dist - threshold) / fwidth(dist) is the signed distance to that edge in
-            // screen pixels -> a ~1 px AA band at ANY glyph size, with no dependency on a per-vertex
-            // scale (uGUI does not reliably deliver uv0.z/.w to the fragment stage). `screenPxRange`
-            // is kept in the signature but unused; `sharpen` (1 = natural) tightens/loosens the band.
-            float coverage(float dist, float threshold, float screenPxRange, float sharpen)
+
+            float coverage(float dist, float threshold, float w, float sharpen, float dFloor)
             {
-                float w = max(fwidth(dist), 1e-5);
-                float px = (dist - threshold) / w;
+                float px = (dist - threshold) / max(w, 1e-5);
                 float sharpMul = max(0.15, sharpen);
-                return saturate(px * sharpMul + 0.5);
+                float cov = saturate(px * sharpMul + 0.5);
+                
+                float pFloor = (dFloor - threshold) / max(w, 1e-5);
+                float pedestal = saturate(pFloor * sharpMul + 0.5);
+                
+                return saturate((cov - pedestal) / max(1e-4, 1.0 - pedestal));
             }
 
-            float ditheredSpiralBlur(float radPx, float2 centerUV, float4 cellRect, float bias, float sharpness, float2 screenPos, int numTaps, float uv_per_local)
+            float ditheredSpiralBlur(float radPx, float2 centerUV, float4 cellRect, float bias, float sharpness, float2 screenPos, int numTaps, float uv_per_local, float aaWidth)
             {
                 float2 uvClamp = clamp(centerUV, cellRect.xy, cellRect.zw);
-                float4 centerField = tex2D(_MainTex, uvClamp);
+                float4 centerField = tex2Dlod(_MainTex, float4(uvClamp, 0, 0));
                 float centerDist = centerField.a - 0.5 + bias;
                 
                 if (radPx <= 0.01 || numTaps <= 1)
                 {
-                    return coverage(centerDist, 0.0, 1.0, sharpness);
+                    return coverage(centerDist, 0.0, aaWidth, sharpness, -0.5 + bias);
                 }
 
-                float w = max(fwidth(centerDist), 1e-5);
                 float sharpMul = max(0.15, sharpness);
-
                 float noise = frac(sin(dot(screenPos, float2(12.9898, 78.233))) * 43758.5453);
                 float angleOffset = noise * 6.2831853;
                 
                 float accum = 0.0;
-                int safeTaps = min(numTaps, 64);
+                int safeTaps = min(numTaps, 128);
+                float pedestal = saturate((-0.5 + bias) / max(aaWidth, 1e-5) * sharpMul + 0.5);
                 
                 [loop]
                 for (int j = 0; j < safeTaps; j++)
@@ -177,52 +180,64 @@ Shader "Sperlich/Text SDF"
                     float2 uvOffset = offsetPx * uv_per_local;
                     float2 uvTap = clamp(centerUV + uvOffset, cellRect.xy, cellRect.zw);
                     
-                    float tapDist = tex2D(_MainTex, uvTap).a - 0.5 + bias;
-                    float px = tapDist / w;
-                    accum += saturate(px * sharpMul + 0.5);
+                    float tapDist = tex2Dlod(_MainTex, float4(uvTap, 0, 0)).a - 0.5 + bias;
+                    float px = tapDist / max(aaWidth, 1e-5);
+                    float cov = saturate(px * sharpMul + 0.5);
+                    accum += saturate((cov - pedestal) / max(1e-4, 1.0 - pedestal));
                 }
                 return accum / (float)safeTaps;
             }
 
-            float sampleOutlineMorphology(float radiusPx, float2 centerUV, float4 cellRect, float bias, float sharpness, float uv_per_local, bool isErosion)
+            float sampleOutlineMorphology(float radiusPx, float2 centerUV, float4 cellRect, float bias, float sharpness, float uv_per_local, float aaWidth, bool isErosion)
             {
                 float2 uvClamp = clamp(centerUV, cellRect.xy, cellRect.zw);
-                float4 centerField = tex2D(_MainTex, uvClamp);
+                float4 centerField = tex2Dlod(_MainTex, float4(uvClamp, 0, 0));
                 float centerDist = centerField.a - 0.5 + bias;
                 
                 if (radiusPx <= 0.01)
                 {
-                    return coverage(centerDist, 0.0, 1.0, sharpness);
+                    return coverage(centerDist, 0.0, aaWidth, sharpness, -0.5 + bias);
                 }
 
-                float w = max(fwidth(centerDist), 1e-5);
                 float sharpMul = max(0.15, sharpness);
                 float targetDist = centerDist;
 
-                // 2 concentric rings: 8 taps at 0.5 R, 16 taps at 1.0 R
+                // 3 concentric rings: 16 taps at 0.33 R, 32 taps at 0.66 R, 64 taps at 1.0 R
                 // Sampling continuous distance field produces a perfectly smooth contour without scalloped bumps
                 [loop]
-                for (int j = 0; j < 8; j++)
+                for (int j = 0; j < 16; j++)
                 {
-                    float angle = j * (6.2831853 / 8.0);
-                    float2 offset = float2(cos(angle), sin(angle)) * (radiusPx * 0.5 * uv_per_local);
+                    float angle = j * (6.2831853 / 16.0);
+                    float2 offset = float2(cos(angle), sin(angle)) * (radiusPx * 0.333 * uv_per_local);
                     float2 uvTap = clamp(centerUV + offset, cellRect.xy, cellRect.zw);
-                    float tapDist = tex2D(_MainTex, uvTap).a - 0.5 + bias;
+                    float tapDist = tex2Dlod(_MainTex, float4(uvTap, 0, 0)).a - 0.5 + bias;
                     targetDist = isErosion ? min(targetDist, tapDist) : max(targetDist, tapDist);
                 }
 
                 [loop]
-                for (int k = 0; k < 16; k++)
+                for (int k = 0; k < 32; k++)
                 {
-                    float angle = (k + 0.5) * (6.2831853 / 16.0);
-                    float2 offset = float2(cos(angle), sin(angle)) * (radiusPx * uv_per_local);
+                    float angle = (k + 0.5) * (6.2831853 / 32.0);
+                    float2 offset = float2(cos(angle), sin(angle)) * (radiusPx * 0.666 * uv_per_local);
                     float2 uvTap = clamp(centerUV + offset, cellRect.xy, cellRect.zw);
-                    float tapDist = tex2D(_MainTex, uvTap).a - 0.5 + bias;
+                    float tapDist = tex2Dlod(_MainTex, float4(uvTap, 0, 0)).a - 0.5 + bias;
                     targetDist = isErosion ? min(targetDist, tapDist) : max(targetDist, tapDist);
                 }
 
-                float px = targetDist / w;
-                return saturate(px * sharpMul + 0.5);
+                [loop]
+                for (int m = 0; m < 64; m++)
+                {
+                    float angle = m * (6.2831853 / 64.0);
+                    float2 offset = float2(cos(angle), sin(angle)) * (radiusPx * uv_per_local);
+                    float2 uvTap = clamp(centerUV + offset, cellRect.xy, cellRect.zw);
+                    float tapDist = tex2Dlod(_MainTex, float4(uvTap, 0, 0)).a - 0.5 + bias;
+                    targetDist = isErosion ? min(targetDist, tapDist) : max(targetDist, tapDist);
+                }
+
+                float px = targetDist / max(aaWidth, 1e-5);
+                float cov = saturate(px * sharpMul + 0.5);
+                float pedestal = saturate((-0.5 + bias) / max(aaWidth, 1e-5) * sharpMul + 0.5);
+                return saturate((cov - pedestal) / max(1e-4, 1.0 - pedestal));
             }
 
             fixed4 frag(v2f i) : SV_Target
@@ -239,8 +254,11 @@ Shader "Sperlich/Text SDF"
                     #endif
                     return solid;
                 }
+
+                float uv_per_local = i.uv1.w;
+                
                 float2 uvClamp = clamp(i.uv0.xy, i.cellRect.xy, i.cellRect.zw);
-                float4 fieldTex = tex2D(_MainTex, uvClamp);
+                float4 fieldTex = tex2Dlod(_MainTex, float4(uvClamp, 0, 0));
                 #ifdef SPERLICH_MTSDF
                 float sd     = median3(fieldTex.rgb); // multi-channel median: sharp corners, 0.5 = edge
                 float sdSoft = fieldTex.a;            // true SDF: smooth, valid far from the edge
@@ -248,6 +266,9 @@ Shader "Sperlich/Text SDF"
                 float sd     = fieldTex.a; // single-channel SDF, 0..1, 0.5 = edge
                 float sdSoft = fieldTex.a;
                 #endif
+
+                float pxSize = max(sqrt(0.5 * (dot(ddx(i.worldPos.xy), ddx(i.worldPos.xy)) + dot(ddy(i.worldPos.xy), ddy(i.worldPos.xy)))), 1e-5);
+                float aaWidth = clamp(pxSize / max(i.uv0.z, 1e-4), 1e-4, 0.5);
                 float d     = sd     - 0.5 + _FaceDilate * 0.5 + i.uv0.w; // face field (sharp corners)
                 float dSoft = sdSoft - 0.5 + _FaceDilate * 0.5 + i.uv0.w; // outline / glow / shadow field
                 // Alpha the field can still express once fully outside the shape (it clamps there). The
@@ -260,8 +281,7 @@ Shader "Sperlich/Text SDF"
                 if (fxMode > 0.5 && fxMode < 1.5)
                 {
                     float ow = i.uv1.y;
-                    float uv_per_local = i.uv1.w;
-                    float ocCov = sampleOutlineMorphology(ow, i.uv0.xy, i.cellRect, i.uv0.w, _Sharpness, uv_per_local, false);
+                    float ocCov = sampleOutlineMorphology(ow, i.uv0.xy, i.cellRect, i.uv0.w, _Sharpness, uv_per_local, aaWidth, false);
                     fixed4 oc = i.color;
                     oc.a *= ocCov;
                     #ifdef UNITY_UI_CLIP_RECT
@@ -279,15 +299,16 @@ Shader "Sperlich/Text SDF"
                     float radPx    = max(i.uv1.y, 1.0);
                     bool  bloom    = i.uv1.z < 0.0;
                     float gi       = abs(i.uv1.z);
-                    float uv_per_local = i.uv1.w;
 
-                    float blurAlpha = ditheredSpiralBlur(radPx, i.uv0.xy, i.cellRect, i.uv0.w, _Sharpness, i.vertex.xy, (int)_GlowTaps, uv_per_local);
+                    int numTaps = bloom ? (int)max(1.0, _BloomTaps) : (int)max(1.0, _GlowTaps);
+                    float blurAlpha = ditheredSpiralBlur(radPx, i.uv0.xy, i.cellRect, i.uv0.w, _Sharpness, i.vertex.xy, numTaps, uv_per_local, aaWidth);
 
                     fixed4 gc = i.color;
                     if (bloom)
                     {
                         // Blown-out neon: wide soft skirt, hot white core where density is highest
-                        float lift = 1.0 - pow(1.0 - blurAlpha, 1.7);
+                        float falloff = max(0.01, _BloomFalloff);
+                        float lift = 1.0 - pow(1.0 - blurAlpha, falloff);
                         gc.rgb = lerp(gc.rgb, float3(1.0, 1.0, 1.0), saturate((blurAlpha - 0.55) * 2.4));
                         gc.a  *= saturate(lift * gi);
                     }
@@ -305,12 +326,33 @@ Shader "Sperlich/Text SDF"
                     return gc;
                 }
 
-                // fxMode 3: smooth dithered multi-tap shadow (true Gaussian-like blur, no clamping)
+                // fxMode 3: drop shadow (SDF single-tap for Low quality, multi-tap Gaussian blur for Medium/High)
                 if (fxMode > 2.5)
                 {
                     float radPx = i.uv1.y;
-                    float uv_per_local = i.uv1.w;
-                    float shadowCov = ditheredSpiralBlur(radPx, i.uv0.xy, i.cellRect, i.uv0.w, _Sharpness, i.vertex.xy, (int)_ShadowTaps, uv_per_local);
+                    float shadowCov;
+                    if (_ShadowTaps <= 1.5)
+                    {
+                        if (radPx <= 0.01)
+                        {
+                            shadowCov = coverage(dSoft, 0.0, aaWidth, _Sharpness, dFloor);
+                        }
+                        else
+                        {
+                            float softnessPx = max(radPx, pxSize);
+                            float w = softnessPx / max(i.uv0.z, 1e-4);
+                            float t = saturate((dSoft / w) + 0.5);
+                            shadowCov = t * t * (3.0 - 2.0 * t);
+
+                            // Smooth fade at the atlas padding boundary so no hard box edges appear
+                            float boundaryFade = saturate((dSoft - dFloor) / max(1e-4, -dFloor));
+                            shadowCov *= boundaryFade * boundaryFade * (3.0 - 2.0 * boundaryFade);
+                        }
+                    }
+                    else
+                    {
+                        shadowCov = ditheredSpiralBlur(radPx, i.uv0.xy, i.cellRect, i.uv0.w, _Sharpness, i.vertex.xy, (int)_ShadowTaps, uv_per_local, aaWidth);
+                    }
 
                     fixed4 sc = i.color;
                     sc.a *= saturate(shadowCov);
@@ -328,12 +370,16 @@ Shader "Sperlich/Text SDF"
                 // AA seam between them blends. _OutlineMode positions the band relative to the glyph edge:
                 // Outer (2) [0,+W] · Middle (1) [-W/2,+W/2] · Inner (0) [-W,0].
                 float ow = _OutlineWidth;
-                float uv_per_local = i.uv1.w;
-                float faceBaseA = coverage(d, 0.0, i.uv0.z, _Sharpness);
+                float faceBaseA = coverage(d, 0.0, aaWidth, _Sharpness, dFloor);
 
                 float faceA = faceBaseA;
                 bool realGlyph = (i.uv1.y <= 0.001); // per-tag shadow copies carry a softness in uv1.y
-                if (!realGlyph) faceA = saturate(dSoft / i.uv1.y + 0.5); // soft edge for the per-tag shadow copy
+                if (!realGlyph) 
+                {
+                    float sa = saturate(dSoft / i.uv1.y + 0.5);
+                    float sp = saturate(dFloor / i.uv1.y + 0.5);
+                    faceA = saturate((sa - sp) / max(1e-4, 1.0 - sp));
+                }
 
                 fixed4 col = i.color;
 
@@ -342,8 +388,8 @@ Shader "Sperlich/Text SDF"
                     float rOut = (_OutlineMode >= 1.0) ? (_OutlineMode == 2.0 ? ow : ow * 0.5) : 0.0;
                     float rIn  = (_OutlineMode <= 1.0) ? (_OutlineMode == 0.0 ? ow : ow * 0.5) : 0.0;
 
-                    float erodedFillA = (rIn > 0.01) ? sampleOutlineMorphology(rIn, i.uv0.xy, i.cellRect, i.uv0.w, _Sharpness, uv_per_local, true) : faceBaseA;
-                    float outerDilatedA = (rOut > 0.01) ? sampleOutlineMorphology(rOut, i.uv0.xy, i.cellRect, i.uv0.w, _Sharpness, uv_per_local, false) : faceBaseA;
+                    float erodedFillA = (rIn > 0.01) ? sampleOutlineMorphology(rIn, i.uv0.xy, i.cellRect, i.uv0.w, _Sharpness, uv_per_local, aaWidth, true) : faceBaseA;
+                    float outerDilatedA = (rOut > 0.01) ? sampleOutlineMorphology(rOut, i.uv0.xy, i.cellRect, i.uv0.w, _Sharpness, uv_per_local, aaWidth, false) : faceBaseA;
 
                     faceA = erodedFillA;
                     col.a *= faceA;

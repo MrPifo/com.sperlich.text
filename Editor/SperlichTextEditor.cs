@@ -8,11 +8,11 @@ using UnityEngine.UIElements;
 namespace Sperlich.Text.EditorTools {
 
 	/// <summary>
-	/// Inspector for <see cref="SperlichText"/>, built on UI Toolkit with the shared Sperlich EditorKit:
+	/// Inspector for <see cref="SText"/>, built on UI Toolkit with the shared Sperlich EditorKit:
 	/// collapsible sections, pill toggles, the custom enum dropdown, Word-style icon buttons for the two
 	/// alignments, and a resizable / scrolling markup editor with a tag-insert toolbar.
 	/// </summary>
-	[CustomEditor(typeof(SperlichText))]
+	[CustomEditor(typeof(SText))]
 	public sealed class SperlichTextEditor : Editor {
 
 		private static readonly Color Accent = SperlichEditorTheme.ButtonAccent;
@@ -25,10 +25,18 @@ namespace Sperlich.Text.EditorTools {
 		private readonly SperlichFieldColumn col = new(142f);
 
 		public override VisualElement CreateInspectorGUI() {
-			var root = new VisualElement { style = { paddingTop = 2, paddingBottom = 4 } };
+			var root = new VisualElement {
+				style = {
+					paddingTop = 2,
+					paddingBottom = 4,
+					marginLeft = -15,
+					marginRight = -4
+				}
+			};
 
 			// ---- Content -------------------------------------------------------------------------
 			var content = Section(root, "CONTENT", true);
+			content.Add(BuildTextArea());
 			content.Add(col.Row("Font Style", SperlichEditorWidgets.CreateFlagButtons(
 				serializedObject.FindProperty("m_fontStyle"),
 				new[] { "B", "I", "U", "S", "AB", "ab", "Ab" },
@@ -36,7 +44,6 @@ namespace Sperlich.Text.EditorTools {
 				Accent,
 				new[] { new[] { 4, 5, 6 } },      // Uppercase / Lowercase / SmallCaps are mutually exclusive
 				new[] { 4 })));                   // divider between the text-style and the case buttons
-			content.Add(BuildTextArea());
 			content.Add(BoolRow("m_richText", "Rich Text"));
 			content.Add(col.Row("Font", SperlichEditorWidgets.CreateAssetDropdown<FontDefinition>(serializedObject.FindProperty("m_font"), Accent)));
 			content.Add(Field("m_Color", "Base Color"));
@@ -104,6 +111,8 @@ namespace Sperlich.Text.EditorTools {
 			bloomSec.Add(Field("m_bloomColor", "Color"));
 			bloomSec.Add(Field("m_bloomRadius", "Radius"));
 			bloomSec.Add(Field("m_bloomIntensity", "Intensity"));
+			bloomSec.Add(Field("m_bloomFallOff", "Falloff"));
+			bloomSec.Add(Field("m_bloomSamples", "Samples"));
 
 			// ---- uGUI -----------------------------------------------------------------------
 			var ugui = Section(root, "uGUI", false);
@@ -115,7 +124,7 @@ namespace Sperlich.Text.EditorTools {
 
 			root.TrackSerializedObjectValue(serializedObject, _ => {
 				foreach (UnityEngine.Object t in targets)
-					if (t is SperlichText st) st.SetAllDirty();
+					if (t is SText st) st.SetAllDirty();
 			});
 
 			// keep the inspector scroll position across Undo/Redo rebuilds instead of snapping to top
@@ -278,6 +287,10 @@ namespace Sperlich.Text.EditorTools {
 					amp.floatValue = 6f;
 					freq.floatValue = 0.35f;
 					spd.floatValue = 6f;
+					el.FindPropertyRelative("WaveStyle").enumValueIndex = (int)WaveStyle.Sine;
+					el.FindPropertyRelative("Inverse").boolValue = false;
+					el.FindPropertyRelative("Once").boolValue = false;
+					el.FindPropertyRelative("Progress").floatValue = 0f;
 					break;
 				case BuiltinEffect.Shake:
 					amp.floatValue = 2.5f;
@@ -285,31 +298,60 @@ namespace Sperlich.Text.EditorTools {
 					spd.floatValue = 1f;
 					break;
 				case BuiltinEffect.Pulse:
-					amp.floatValue = 0.12f;
-					freq.floatValue = 2f;
+					amp.floatValue = 0.25f;
+					freq.floatValue = 0.35f;
+					spd.floatValue = 5f;
+					el.FindPropertyRelative("ScaleStyle").enumValueIndex = (int)ScaleStyle.SquashAndStretch;
+					el.FindPropertyRelative("Easing").enumValueIndex = (int)TextEasing.EaseOutBack;
+					el.FindPropertyRelative("Angle").floatValue = 0f;
+					el.FindPropertyRelative("Inverse").boolValue = false;
+					el.FindPropertyRelative("Once").boolValue = false;
+					el.FindPropertyRelative("Progress").floatValue = 0f;
+					break;
+				case BuiltinEffect.Rotate:
+					amp.floatValue = 20f;
+					freq.floatValue = 0.35f;
 					spd.floatValue = 4f;
+					el.FindPropertyRelative("RotateStyle").enumValueIndex = (int)RotateStyle.Wobble;
+					el.FindPropertyRelative("Inverse").boolValue = false;
+					el.FindPropertyRelative("Once").boolValue = false;
+					el.FindPropertyRelative("Progress").floatValue = 0f;
 					break;
 				case BuiltinEffect.Rainbow:
 					amp.floatValue = 1f;
 					freq.floatValue = 0.04f;
 					spd.floatValue = 1.5f;
+					el.FindPropertyRelative("Inverse").boolValue = false;
 					ramp.gradientValue = BuiltinEffectParams.CreateRainbowGradient();
 					break;
 				case BuiltinEffect.Glow:
-					amp.floatValue = 0.4f;
-					freq.floatValue = 3f;
-					spd.floatValue = 1.5f;
+					amp.floatValue = 0.25f;
+					freq.floatValue = 1f;
+					spd.floatValue = 2f;
 					ca.colorValue = new Color(0.55f, 0.55f, 0.55f, 1f);
 					cb.colorValue = Color.white;
+					el.FindPropertyRelative("GlowStyle").enumValueIndex = (int)GlowStyle.Fade;
+					el.FindPropertyRelative("Angle").floatValue = 25f;
+					if (IsDefaultOrEmptyGradient(ramp.gradientValue)) {
+						ramp.gradientValue = BuiltinEffectParams.CreateGoldShimmerGradient();
+					}
+					el.FindPropertyRelative("Inverse").boolValue = false;
+					el.FindPropertyRelative("Once").boolValue = false;
+					el.FindPropertyRelative("Progress").floatValue = 0f;
 					break;
 				case BuiltinEffect.Glitch:
 					amp.floatValue = 3f;
 					freq.floatValue = 12f;
 					spd.floatValue = 1f;
+					el.FindPropertyRelative("GlitchStyle").enumValueIndex = (int)GlitchStyle.Glitch;
 					el.FindPropertyRelative("Amount").floatValue = 0.25f;
+					el.FindPropertyRelative("ScrambleCharacters").stringValue = "";
 					if (IsDefaultOrEmptyGradient(ramp.gradientValue)) {
 						ramp.gradientValue = BuiltinEffectParams.CreateRainbowGradient();
 					}
+					el.FindPropertyRelative("Inverse").boolValue = false;
+					el.FindPropertyRelative("Once").boolValue = false;
+					el.FindPropertyRelative("Progress").floatValue = 0f;
 					break;
 			}
 		}
@@ -374,45 +416,43 @@ namespace Sperlich.Text.EditorTools {
 			return card;
 		}
 
-		/// <summary>"Color Ramp"-Zeile: ein direkt gebundenes <see cref="GradientField"/> (das PropertyField
-		/// für einen Gradient in einem verschachtelten Array-Element rendert oft leer). Leerer/1-Key-Gradient
-		/// oder unveränderter Standard-Gradient wird einmalig mit einem Regenbogen vorbelegt.</summary>
-		private VisualElement RampRow(SerializedProperty ramp) {
-			Gradient cur = ramp.gradientValue;
-			if (IsDefaultOrEmptyGradient(cur)) {
-				ramp.gradientValue = BuiltinEffectParams.CreateRainbowGradient();
-				serializedObject.ApplyModifiedProperties();
-			}
+		private static bool IsDefaultOrEmptyGradient(Gradient g) {
+			if (g == null || g.colorKeys == null || g.colorKeys.Length == 0) return true;
+			if (g.colorKeys.Length == 2 && g.colorKeys[0].color == Color.white && g.colorKeys[1].color == Color.white) return true;
+			return false;
+		}
+
+		private VisualElement RampRow(SerializedProperty prop) {
 			var gf = new UnityEditor.UIElements.GradientField { style = { flexGrow = 1 } };
-			gf.BindProperty(ramp);
+			gf.BindProperty(prop);
 			SperlichFieldColumn.HideInternalLabel(gf);
 			return effectCol.Row("Color Ramp", gf);
 		}
 
-		/// <summary>Prüft, ob ein Gradient leer, null oder der 2-farbige Standard-Weiß-Gradient von Unity ist.</summary>
-		private static bool IsDefaultOrEmptyGradient(Gradient cur) {
-			if (cur == null || cur.colorKeys == null || cur.colorKeys.Length < 2) return true;
-			if (cur.colorKeys.Length == 2 &&
-			    cur.colorKeys[0].color == Color.white &&
-			    cur.colorKeys[1].color == Color.white) {
-				return true;
-			}
-			return false;
-		}
-
-		/// <summary>"Color"-Zeile: ein direkt gebundenes <see cref="ColorField"/> für verschachtelte Array-Elemente.</summary>
-		private VisualElement ColorRow(SerializedProperty colorProp, string label) {
+		private VisualElement ColorRow(SerializedProperty prop, string label) {
 			var cf = new UnityEditor.UIElements.ColorField { style = { flexGrow = 1 }, showAlpha = true };
-			cf.BindProperty(colorProp);
+			cf.BindProperty(prop);
 			SperlichFieldColumn.HideInternalLabel(cf);
 			return effectCol.Row(label, cf);
 		}
 
 		/// <summary>"Percent Slider"-Zeile: Slider von 0..1 mit Prozentanzeige (0..100%).</summary>
-		private VisualElement PercentSliderRow(SerializedProperty prop, string label) {
+		private VisualElement PercentSliderRow(SerializedProperty prop, string label, float maxScale = 1f) {
 			var row = new VisualElement { style = { flexDirection = FlexDirection.Row, alignItems = Align.Center, flexGrow = 1 } };
 			var slider = new Slider(0f, 1f) { style = { flexGrow = 1 } };
-			slider.BindProperty(prop);
+			if (Mathf.Approximately(maxScale, 1f)) {
+				slider.BindProperty(prop);
+			} else {
+				slider.value = Mathf.Clamp01(prop.floatValue / maxScale);
+				slider.RegisterValueChangedCallback(evt => {
+					prop.floatValue = evt.newValue * maxScale;
+					prop.serializedObject.ApplyModifiedProperties();
+				});
+				slider.TrackPropertyValue(prop, _ => {
+					float target = Mathf.Clamp01(prop.floatValue / maxScale);
+					if (!Mathf.Approximately(slider.value, target)) slider.value = target;
+				});
+			}
 			SperlichFieldColumn.HideInternalLabel(slider);
 
 			var percentLabel = new Label {
@@ -425,13 +465,26 @@ namespace Sperlich.Text.EditorTools {
 				}
 			};
 
-			void UpdateText() => percentLabel.text = $"{Mathf.RoundToInt(Mathf.Clamp01(prop.floatValue) * 100f)} %";
+			void UpdateText() => percentLabel.text = $"{Mathf.RoundToInt(Mathf.Clamp01(prop.floatValue / maxScale) * 100f)} %";
 			UpdateText();
 			row.TrackPropertyValue(prop, _ => UpdateText());
 
 			row.Add(slider);
 			row.Add(percentLabel);
 			return effectCol.Row(label, row);
+		}
+
+		/// <summary>Slider-Zeile für Float-Werte mit min/max Grenzen und Zahlenfeld.</summary>
+		private VisualElement FloatSliderRow(SerializedProperty prop, string label, float min, float max) {
+			return effectCol.Slider(prop, label, min, max);
+		}
+
+		/// <summary>Textfeld-Zeile für Strings.</summary>
+		private VisualElement TextRow(SerializedProperty prop, string label) {
+			var tf = new TextField { style = { flexGrow = 1 } };
+			tf.BindProperty(prop);
+			SperlichFieldColumn.HideInternalLabel(tf);
+			return effectCol.Row(label, tf);
 		}
 
 		private void PopulateEffectParams(VisualElement host, SerializedProperty el, BuiltinEffect effect) {
@@ -441,40 +494,237 @@ namespace Sperlich.Text.EditorTools {
 			SerializedProperty ca = el.FindPropertyRelative("ColorA");
 			SerializedProperty cb = el.FindPropertyRelative("ColorB");
 			SerializedProperty ramp = el.FindPropertyRelative("Ramp");
+			SerializedProperty amount = el.FindPropertyRelative("Amount");
+			SerializedProperty inv = el.FindPropertyRelative("Inverse");
+			SerializedProperty once = el.FindPropertyRelative("Once");
+			SerializedProperty progress = el.FindPropertyRelative("Progress");
 
 			switch (effect) {
-				case BuiltinEffect.Wave:
+				case BuiltinEffect.Wave: {
+					host.Add(effectCol.Property(el.FindPropertyRelative("WaveStyle"), "Wave Style"));
 					host.Add(effectCol.Property(amp, "Height"));
 					host.Add(effectCol.Property(freq, "Wavelength"));
 					host.Add(effectCol.Property(spd, "Speed"));
+					host.Add(effectCol.Property(inv, "Inverse"));
+					host.Add(effectCol.Property(once, "Once"));
+
+					var progressRow = PercentSliderRow(progress, "Progress");
+					host.Add(progressRow);
+					void UpdateProg() => progressRow.style.display = once.boolValue ? DisplayStyle.Flex : DisplayStyle.None;
+					UpdateProg();
+					progressRow.TrackPropertyValue(once, _ => UpdateProg());
 					break;
+				}
 				case BuiltinEffect.Shake:
 					host.Add(effectCol.Property(amp, "Distance"));
 					host.Add(effectCol.Property(freq, "Shake Rate"));
 					break;
-				case BuiltinEffect.Pulse:
-					host.Add(effectCol.Property(amp, "Scale Amount"));
-					host.Add(effectCol.Property(freq, "Phase Offset"));
+				case BuiltinEffect.Pulse: {
+					SerializedProperty scaleStyle = el.FindPropertyRelative("ScaleStyle");
+					host.Add(effectCol.Property(scaleStyle, "Scale Style"));
+
+					var easingRow = effectCol.Property(el.FindPropertyRelative("Easing"), "Easing");
+					host.Add(easingRow);
+
+					var ampRow = effectCol.Property(amp, "Scale Amount");
+					host.Add(ampRow);
+
+					var rotRow = effectCol.DragNumber(el.FindPropertyRelative("Angle"), "Initial Rotation (°)");
+					host.Add(rotRow);
+
+					host.Add(effectCol.Property(freq, "Wavelength"));
 					host.Add(effectCol.Property(spd, "Speed"));
+					host.Add(effectCol.Property(inv, "Inverse"));
+					host.Add(effectCol.Property(once, "Once"));
+
+					var progressRow = PercentSliderRow(progress, "Progress");
+					host.Add(progressRow);
+
+					void UpdateScaleVisibility() {
+						ScaleStyle st = (ScaleStyle)scaleStyle.enumValueIndex;
+						bool isTransition = (st == ScaleStyle.PopIn || st == ScaleStyle.PopOut);
+						easingRow.style.display = (isTransition || st == ScaleStyle.SquashAndStretch) ? DisplayStyle.Flex : DisplayStyle.None;
+						ampRow.style.display = isTransition ? DisplayStyle.None : DisplayStyle.Flex;
+						rotRow.style.display = isTransition ? DisplayStyle.Flex : DisplayStyle.None;
+						progressRow.style.display = (once.boolValue || isTransition) ? DisplayStyle.Flex : DisplayStyle.None;
+					}
+					UpdateScaleVisibility();
+					host.TrackPropertyValue(scaleStyle, _ => UpdateScaleVisibility());
+					host.TrackPropertyValue(once, _ => UpdateScaleVisibility());
 					break;
+				}
+				case BuiltinEffect.Rotate: {
+					SerializedProperty rotateStyle = el.FindPropertyRelative("RotateStyle");
+					host.Add(effectCol.Property(rotateStyle, "Rotate Style"));
+
+					var ampRow = effectCol.DragNumber(amp, "Rotation Angle (°)");
+					host.Add(ampRow);
+
+					host.Add(effectCol.Property(freq, "Wavelength"));
+					host.Add(effectCol.Property(spd, "Speed"));
+					host.Add(effectCol.Property(inv, "Inverse"));
+					host.Add(effectCol.Property(once, "Once"));
+
+					var progressRow = PercentSliderRow(progress, "Progress");
+					host.Add(progressRow);
+
+					void UpdateRotateVisibility() {
+						RotateStyle rs = (RotateStyle)rotateStyle.enumValueIndex;
+						ampRow.style.display = (rs == RotateStyle.Wobble) ? DisplayStyle.Flex : DisplayStyle.None;
+						progressRow.style.display = once.boolValue ? DisplayStyle.Flex : DisplayStyle.None;
+					}
+					UpdateRotateVisibility();
+					host.TrackPropertyValue(rotateStyle, _ => UpdateRotateVisibility());
+					host.TrackPropertyValue(once, _ => UpdateRotateVisibility());
+					break;
+				}
 				case BuiltinEffect.Rainbow:
-					host.Add(effectCol.Property(freq, "Spread"));
+					host.Add(PercentSliderRow(freq, "Spread", 0.1f));
 					host.Add(effectCol.Property(spd, "Speed"));
 					host.Add(RampRow(ramp));
+					host.Add(effectCol.Property(inv, "Inverse"));
 					break;
-				case BuiltinEffect.Glow:
-					host.Add(ColorRow(ca, "Color A"));
-					host.Add(ColorRow(cb, "Color B"));
-					host.Add(effectCol.Property(freq, "Fade Sharpness"));
-					host.Add(effectCol.Property(spd, "Fade Speed"));
+				case BuiltinEffect.Glow: {
+					SerializedProperty glowStyle = el.FindPropertyRelative("GlowStyle");
+					host.Add(effectCol.Property(glowStyle, "Glow Style"));
+
+					// Fade rows
+					var fadeCa = ColorRow(ca, "Color A");
+					var fadeCb = ColorRow(cb, "Color B");
+					var fadeSharp = effectCol.Property(freq, "Fade Sharpness");
+					var fadeSpd = effectCol.Property(spd, "Fade Speed");
+					var fadeInv = effectCol.Property(inv, "Inverse");
+
+					// Shimmer rows
+					var shimmerRamp = RampRow(ramp);
+					var shimmerWidth = FloatSliderRow(amp, "Beam Width", 0.02f, 0.8f);
+					var shimmerCount = effectCol.SliderInt(freq, "Beam Count", 1, 10);
+					var shimmerAngle = FloatSliderRow(el.FindPropertyRelative("Angle"), "Beam Angle", -80f, 80f);
+					var shimmerSpd = effectCol.Property(spd, "Speed");
+					var shimmerInv = effectCol.Property(inv, "Inverse");
+					var shimmerOnce = effectCol.Property(once, "Once");
+					var shimmerProg = PercentSliderRow(progress, "Progress");
+
+					// Neon Flicker rows
+					var flickerCa = ColorRow(ca, "Dim / Off Color");
+					var flickerCb = ColorRow(cb, "Bright / On Color");
+					var flickerSpd = effectCol.Property(spd, "Flicker Speed");
+					var flickerRate = effectCol.Property(freq, "Flicker Rate");
+					var flickerAmount = PercentSliderRow(amount, "Flicker Drop");
+
+					host.Add(fadeCa);
+					host.Add(fadeCb);
+					host.Add(fadeSharp);
+					host.Add(fadeSpd);
+					host.Add(fadeInv);
+
+					host.Add(shimmerRamp);
+					host.Add(shimmerWidth);
+					host.Add(shimmerCount);
+					host.Add(shimmerAngle);
+					host.Add(shimmerSpd);
+					host.Add(shimmerInv);
+					host.Add(shimmerOnce);
+					host.Add(shimmerProg);
+
+					host.Add(flickerCa);
+					host.Add(flickerCb);
+					host.Add(flickerSpd);
+					host.Add(flickerRate);
+					host.Add(flickerAmount);
+
+					void UpdateGlowVisibility() {
+						GlowStyle gs = (GlowStyle)glowStyle.enumValueIndex;
+						bool isFade = gs == GlowStyle.Fade;
+						bool isShimmer = gs == GlowStyle.Shimmer;
+						bool isFlicker = gs == GlowStyle.NeonFlicker;
+
+						fadeCa.style.display = isFade ? DisplayStyle.Flex : DisplayStyle.None;
+						fadeCb.style.display = isFade ? DisplayStyle.Flex : DisplayStyle.None;
+						fadeSharp.style.display = isFade ? DisplayStyle.Flex : DisplayStyle.None;
+						fadeSpd.style.display = isFade ? DisplayStyle.Flex : DisplayStyle.None;
+						fadeInv.style.display = isFade ? DisplayStyle.Flex : DisplayStyle.None;
+
+						shimmerRamp.style.display = isShimmer ? DisplayStyle.Flex : DisplayStyle.None;
+						shimmerWidth.style.display = isShimmer ? DisplayStyle.Flex : DisplayStyle.None;
+						shimmerCount.style.display = isShimmer ? DisplayStyle.Flex : DisplayStyle.None;
+						shimmerAngle.style.display = isShimmer ? DisplayStyle.Flex : DisplayStyle.None;
+						shimmerSpd.style.display = isShimmer ? DisplayStyle.Flex : DisplayStyle.None;
+						shimmerInv.style.display = isShimmer ? DisplayStyle.Flex : DisplayStyle.None;
+						shimmerOnce.style.display = isShimmer ? DisplayStyle.Flex : DisplayStyle.None;
+						shimmerProg.style.display = (isShimmer && once.boolValue) ? DisplayStyle.Flex : DisplayStyle.None;
+
+						flickerCa.style.display = isFlicker ? DisplayStyle.Flex : DisplayStyle.None;
+						flickerCb.style.display = isFlicker ? DisplayStyle.Flex : DisplayStyle.None;
+						flickerSpd.style.display = isFlicker ? DisplayStyle.Flex : DisplayStyle.None;
+						flickerRate.style.display = isFlicker ? DisplayStyle.Flex : DisplayStyle.None;
+						flickerAmount.style.display = isFlicker ? DisplayStyle.Flex : DisplayStyle.None;
+					}
+					UpdateGlowVisibility();
+					host.TrackPropertyValue(glowStyle, _ => UpdateGlowVisibility());
+					host.TrackPropertyValue(once, _ => UpdateGlowVisibility());
 					break;
-				case BuiltinEffect.Glitch:
-					host.Add(effectCol.Property(amp, "Shake Distance"));
-					host.Add(effectCol.Property(freq, "Glitch Rate"));
-					host.Add(PercentSliderRow(el.FindPropertyRelative("Amount"), "Glitch Amount"));
-					host.Add(effectCol.Property(spd, "Color Cycle"));
-					host.Add(RampRow(ramp));
+				}
+				case BuiltinEffect.Glitch: {
+					SerializedProperty glitchStyle = el.FindPropertyRelative("GlitchStyle");
+					host.Add(effectCol.Property(glitchStyle, "Glitch Style"));
+
+					// Glitch rows
+					var glitchAmp = effectCol.DragNumber(amp, "Jitter Distance", min: 0f);
+					var glitchFreq = effectCol.Property(freq, "Glitch Rate");
+					var glitchAmount = PercentSliderRow(amount, "Glitch Amount");
+					var glitchSpd = effectCol.DragNumber(spd, "Color Cycle", min: 0f);
+					var glitchRamp = RampRow(ramp);
+
+					// Matrix rows
+					var matrixAmount = PercentSliderRow(amount, "Active Characters");
+					var matrixSpd = effectCol.DragNumber(spd, "Scramble Speed", min: 0f);
+					var matrixJitter = effectCol.DragNumber(amp, "Jitter Distance", min: 0f);
+					var matrixRamp = RampRow(ramp);
+					var matrixChars = TextRow(el.FindPropertyRelative("ScrambleCharacters"), "Custom Chars");
+					var matrixInv = effectCol.Property(inv, "Inverse");
+					var matrixOnce = effectCol.Property(once, "Once");
+					var matrixProg = PercentSliderRow(progress, "Progress");
+
+					host.Add(glitchAmp);
+					host.Add(glitchFreq);
+					host.Add(glitchAmount);
+					host.Add(glitchSpd);
+					host.Add(glitchRamp);
+
+					host.Add(matrixAmount);
+					host.Add(matrixSpd);
+					host.Add(matrixJitter);
+					host.Add(matrixRamp);
+					host.Add(matrixChars);
+					host.Add(matrixInv);
+					host.Add(matrixOnce);
+					host.Add(matrixProg);
+
+					void UpdateGlitchVisibility() {
+						GlitchStyle gs = (GlitchStyle)glitchStyle.enumValueIndex;
+						bool isMatrix = gs == GlitchStyle.Matrix;
+
+						glitchAmp.style.display = !isMatrix ? DisplayStyle.Flex : DisplayStyle.None;
+						glitchFreq.style.display = !isMatrix ? DisplayStyle.Flex : DisplayStyle.None;
+						glitchAmount.style.display = !isMatrix ? DisplayStyle.Flex : DisplayStyle.None;
+						glitchSpd.style.display = !isMatrix ? DisplayStyle.Flex : DisplayStyle.None;
+						glitchRamp.style.display = !isMatrix ? DisplayStyle.Flex : DisplayStyle.None;
+
+						matrixAmount.style.display = (isMatrix && !once.boolValue) ? DisplayStyle.Flex : DisplayStyle.None;
+						matrixSpd.style.display = isMatrix ? DisplayStyle.Flex : DisplayStyle.None;
+						matrixJitter.style.display = isMatrix ? DisplayStyle.Flex : DisplayStyle.None;
+						matrixRamp.style.display = isMatrix ? DisplayStyle.Flex : DisplayStyle.None;
+						matrixChars.style.display = isMatrix ? DisplayStyle.Flex : DisplayStyle.None;
+						matrixInv.style.display = isMatrix ? DisplayStyle.Flex : DisplayStyle.None;
+						matrixOnce.style.display = isMatrix ? DisplayStyle.Flex : DisplayStyle.None;
+						matrixProg.style.display = (isMatrix && once.boolValue) ? DisplayStyle.Flex : DisplayStyle.None;
+					}
+					UpdateGlitchVisibility();
+					host.TrackPropertyValue(glitchStyle, _ => UpdateGlitchVisibility());
+					host.TrackPropertyValue(once, _ => UpdateGlitchVisibility());
 					break;
+				}
 				default:
 					host.Add(new Label("This entry does nothing (effect = None).") {
 						style = { fontSize = 10, color = SperlichEditorTheme.TextMuted, unityFontStyleAndWeight = FontStyle.Italic }
@@ -632,11 +882,11 @@ namespace Sperlich.Text.EditorTools {
 			box.style.borderRightWidth = 1;
 
 			var scroll = new ScrollView(ScrollViewMode.Vertical) {
-				verticalScrollerVisibility = ScrollerVisibility.AlwaysVisible,
+				verticalScrollerVisibility = ScrollerVisibility.Auto,
 				horizontalScrollerVisibility = ScrollerVisibility.Hidden,
 			};
-			scroll.style.height = editorHeight;
-			scroll.style.minHeight = 44;
+			scroll.style.minHeight = 38;
+			scroll.style.maxHeight = 220;
 			// wheel over the editor scrolls the editor, never the inspector behind it
 			scroll.RegisterCallback<WheelEvent>(e => e.StopPropagation());
 
@@ -650,7 +900,7 @@ namespace Sperlich.Text.EditorTools {
 			VisualElement input = textField.Q("unity-text-input");
 			if (input != null) {
 				input.style.whiteSpace = WhiteSpace.Normal;
-				input.style.minHeight = 40;
+				input.style.minHeight = 20;
 				input.style.unityTextAlign = TextAnchor.UpperLeft;
 			}
 			scroll.Add(textField);
@@ -713,19 +963,23 @@ namespace Sperlich.Text.EditorTools {
 			bool dragging = false;
 			float startY = 0f, startH = 0f;
 			grip.RegisterCallback<PointerDownEvent>(e => {
-				dragging = true; startY = e.position.y; startH = editorHeight;
+				dragging = true;
+				startY = e.position.y;
+				startH = scroll.resolvedStyle.height > 0 ? scroll.resolvedStyle.height : (editorHeight > 0 ? editorHeight : 38f);
+				scroll.style.maxHeight = StyleKeyword.None;
 				grip.CapturePointer(e.pointerId);
 				e.StopPropagation();
 			});
 			grip.RegisterCallback<PointerMoveEvent>(e => {
 				if (!dragging) return;
-				editorHeight = Mathf.Clamp(startH + (e.position.y - startY), 44f, 500f);
+				editorHeight = Mathf.Clamp(startH + (e.position.y - startY), 38f, 500f);
 				scroll.style.height = editorHeight;
 				e.StopPropagation();
 			});
 			grip.RegisterCallback<PointerUpEvent>(e => {
 				if (!dragging) return;
-				dragging = false; grip.ReleasePointer(e.pointerId);
+				dragging = false;
+				grip.ReleasePointer(e.pointerId);
 			});
 			footer.Add(grip);
 

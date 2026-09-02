@@ -6,7 +6,11 @@ using UnityEngine;
 using UnityEngine.UI;
 
 namespace Sperlich.Text {
-	public enum BlurQuality { Low = 12, Medium = 24, High = 48 }
+	/// <summary>
+	/// Quality levels for blur effects such as Drop Shadow and Glow.
+	/// Low uses a fast single-tap SDF evaluation; Medium (24) and High (48) use detailed Gaussian blur.
+	/// </summary>
+	public enum BlurQuality { Low = 1, Medium = 24, High = 48 }
 
 	/// <summary>
 	/// TextMeshPro-style label for uGUI, built on the Sperlich text pipeline: no font-asset bake step,
@@ -14,8 +18,9 @@ namespace Sperlich.Text {
 	/// The component itself is display-only (plan module 14); interaction and editing live in sibling
 	/// components (<see cref="TextInteraction"/>, <see cref="SperlichTextInputField"/>).
 	/// </summary>
-	[AddComponentMenu("Sperlich/Text/Sperlich Text")]
-	public class SperlichText : MaskableGraphic {
+	[AddComponentMenu("Sperlich UI/Text/SText")]
+	[RequireComponent(typeof(CanvasRenderer))]
+	public class SText : MaskableGraphic {
 
 		[SerializeField, TextArea(2, 6)] private string m_text = "New Text";
 		[SerializeField] private FontDefinition m_font;
@@ -79,6 +84,8 @@ namespace Sperlich.Text {
 		[SerializeField] private Color m_bloomColor = new Color(1f, 0.55f, 0.2f, 1f);
 		[SerializeField, Range(0f, 1f)] private float m_bloomRadius = 1f;
 		[SerializeField, Range(0f, 4f)] private float m_bloomIntensity = 2f;
+		[SerializeField, Range(0.1f, 5f)] private float m_bloomFallOff = 1.7f;
+		[SerializeField, Range(1, 128)] private int m_bloomSamples = 24;
 
 		private GlyphStore store;
 		private FontDefinition boundFont;
@@ -135,6 +142,48 @@ namespace Sperlich.Text {
 			set { if (m_bloom != value) { m_bloom = value; SetVerticesDirty(); } }
 		}
 
+		/// <summary>Color of the component-level bloom halo.</summary>
+		public Color BloomColor {
+			get => m_bloomColor;
+			set { if (m_bloomColor != value) { m_bloomColor = value; SetVerticesDirty(); } }
+		}
+
+		/// <summary>Radius of the component-level bloom halo.</summary>
+		public float BloomRadius {
+			get => m_bloomRadius;
+			set {
+				float clamped = Mathf.Clamp01(value);
+				if (!Mathf.Approximately(m_bloomRadius, clamped)) { m_bloomRadius = clamped; SetVerticesDirty(); }
+			}
+		}
+
+		/// <summary>Intensity of the component-level bloom halo.</summary>
+		public float BloomIntensity {
+			get => m_bloomIntensity;
+			set {
+				float clamped = Mathf.Max(0f, value);
+				if (!Mathf.Approximately(m_bloomIntensity, clamped)) { m_bloomIntensity = clamped; SetVerticesDirty(); }
+			}
+		}
+
+		/// <summary>Falloff exponent for the component-level bloom halo.</summary>
+		public float BloomFallOff {
+			get => m_bloomFallOff;
+			set {
+				float clamped = Mathf.Clamp(value, 0.1f, 5f);
+				if (!Mathf.Approximately(m_bloomFallOff, clamped)) { m_bloomFallOff = clamped; SetMaterialDirty(); }
+			}
+		}
+
+		/// <summary>Sample count for the bloom blur noise.</summary>
+		public int BloomSamples {
+			get => m_bloomSamples;
+			set {
+				int clamped = Mathf.Clamp(value, 1, 128);
+				if (m_bloomSamples != clamped) { m_bloomSamples = clamped; SetMaterialDirty(); }
+			}
+		}
+
 		/// <summary>Enables the component-level outline.</summary>
 		public bool Outline {
 			get => m_outline;
@@ -172,6 +221,30 @@ namespace Sperlich.Text {
 		public bool Glow {
 			get => m_glow;
 			set { if (m_glow != value) { m_glow = value; SetMaterialDirty(); SetVerticesDirty(); } }
+		}
+
+		/// <summary>Color of the component-level glow.</summary>
+		public Color GlowColor {
+			get => m_glowColor;
+			set { if (m_glowColor != value) { m_glowColor = value; SetMaterialDirty(); } }
+		}
+
+		/// <summary>Power/intensity of the component-level glow (0..1).</summary>
+		public float GlowPower {
+			get => m_glowPower;
+			set {
+				float clamped = Mathf.Clamp01(value);
+				if (!Mathf.Approximately(m_glowPower, clamped)) { m_glowPower = clamped; SetMaterialDirty(); }
+			}
+		}
+
+		/// <summary>Outer radius/spread of the component-level glow.</summary>
+		public float GlowOuter {
+			get => m_glowOuter;
+			set {
+				float clamped = Mathf.Clamp(value, 0f, 0.5f);
+				if (!Mathf.Approximately(m_glowOuter, clamped)) { m_glowOuter = clamped; SetMaterialDirty(); SetVerticesDirty(); }
+			}
 		}
 
 		/// <summary>Color and alpha of the component-level drop shadow.</summary>
@@ -440,6 +513,10 @@ namespace Sperlich.Text {
 			RebindFont();
 			textDirty = layoutDirty = true;
 			SyncBuiltinEffects();
+			ITextEffect[] customEffects = GetComponents<ITextEffect>();
+			for (int i = 0; i < customEffects.Length; i++) {
+				effects.AddScript(customEffects[i]);
+			}
 			RestartReveal();
 			SetAllDirty();
 		}
@@ -460,6 +537,7 @@ namespace Sperlich.Text {
 			if (c == null) return;
 			const AdditionalCanvasShaderChannels need =
 				AdditionalCanvasShaderChannels.TexCoord1 |
+				AdditionalCanvasShaderChannels.TexCoord2 |
 				AdditionalCanvasShaderChannels.Normal |
 				AdditionalCanvasShaderChannels.Tangent;
 			if ((c.additionalShaderChannels & need) != need)
@@ -630,6 +708,7 @@ namespace Sperlich.Text {
 			SyncBuiltinEffects();
 			if (effects.HasWork || meshBuilder.HasSpanEffects) {
 				effects.Apply(meshBuilder,
+					store,
 					Application.isPlaying ? SperlichTextClock.Time : Time.realtimeSinceStartup,
 					SperlichTextClock.DeltaTime,
 					markup.Text?.Length ?? 0);
@@ -676,6 +755,8 @@ namespace Sperlich.Text {
 			runtimeMaterial.SetFloat("_GlowPower", m_glow ? m_glowPower : 0f);
 			runtimeMaterial.SetFloat("_GlowOuter", m_glowOuter);
 			runtimeMaterial.SetFloat("_GlowTaps", (float)m_glowQuality);
+			runtimeMaterial.SetFloat("_BloomFalloff", m_bloomFallOff);
+			runtimeMaterial.SetFloat("_BloomTaps", (float)m_bloomSamples);
 
 			// MTSDF sampling is a shader keyword: only when the bound font asks for it AND the store's
 			// backend actually serves an MTSDF atlas (a fell-back FontAccess still reports SDF).
@@ -790,7 +871,7 @@ namespace Sperlich.Text {
 			if (m_glow && m_glowPower > 0f) {
 				pad = Mathf.Max(pad, m_glowOuter * samplePx);
 			}
-			return pad + 16f;
+			return pad;
 		}
 
 		private void RunLayout() {

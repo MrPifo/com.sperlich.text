@@ -114,7 +114,7 @@ namespace Sperlich.Text {
 		/// Editor-only. The runtime <see cref="FontAccess"/> bakes sampling size / SDF padding / atlas
 		/// size / face list when it is built and never re-reads this asset. So an inspector edit would
 		/// otherwise do nothing to labels already on screen. Here we clamp the numeric fields and queue
-		/// a one-shot rebuild of every live <see cref="SperlichText"/>.
+		/// a one-shot rebuild of every live <see cref="SText"/>.
 		/// </summary>
 		private void OnValidate() {
 			samplingPointSize = Mathf.Clamp(samplingPointSize, 24, 160);
@@ -128,7 +128,7 @@ namespace Sperlich.Text {
 		private static void RebuildLiveLabels() {
 			s_rebuildQueued = false;
 			GlyphStoreRegistry.EditorPurgeAll();
-			foreach (SperlichText label in FindObjectsByType<SperlichText>(
+			foreach (SText label in FindObjectsByType<SText>(
 				         FindObjectsInactive.Include, FindObjectsSortMode.None)) {
 				label.EditorRebindFont();
 			}

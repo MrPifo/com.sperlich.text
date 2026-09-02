@@ -7,11 +7,11 @@ using UnityEngine.EventSystems;
 namespace Sperlich.Text {
 
 	/// <summary>
-	/// Minimal single/multi-line editable field on top of <see cref="SperlichText"/> (plan module 12).
-	/// Caret + selection rendering via <see cref="SperlichText.SetEditingRects"/>, keyboard through the
+	/// Minimal single/multi-line editable field on top of <see cref="SText"/> (plan module 12).
+	/// Caret + selection rendering via <see cref="SText.SetEditingRects"/>, keyboard through the
 	/// EventSystem, clipboard via <see cref="GUIUtility.systemCopyBuffer"/>. No IME / composition.
 	/// </summary>
-	[RequireComponent(typeof(SperlichText))]
+	[RequireComponent(typeof(SText))]
 	public sealed class SperlichTextInputField : MonoBehaviour,
 		ISelectHandler, IDeselectHandler, IUpdateSelectedHandler, IPointerClickHandler {
 
@@ -28,7 +28,7 @@ namespace Sperlich.Text {
 		public StringEvent onValueChanged = new();
 		public StringEvent onSubmit = new();
 
-		private SperlichText text;
+		private SText text;
 		private int caret;
 		private int anchor;
 		private bool focused;
@@ -38,7 +38,7 @@ namespace Sperlich.Text {
 		public int CaretIndex => caret;
 
 		private void Awake() {
-			text = GetComponent<SperlichText>();
+			text = GetComponent<SText>();
 		}
 
 		private void OnEnable() {

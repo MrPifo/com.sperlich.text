@@ -136,9 +136,76 @@ namespace Sperlich.Text {
 		None = 0,
 		Wave,
 		Shake,
+		[UnityEngine.InspectorName("Scale / Wobble")]
 		Pulse,
+		[UnityEngine.InspectorName("Rotate / Wobble")]
+		Rotate,
 		Rainbow,
 		Glow,
 		Glitch
+	}
+
+	/// <summary>Sub-style for the Wave effect.</summary>
+	public enum WaveStyle {
+		/// <summary>Smooth harmonic sine wave.</summary>
+		Sine = 0,
+		/// <summary>Arc/parabolic jump where characters hop upward and bounce.</summary>
+		Bounce = 1,
+		/// <summary>Linear triangle waveform with sharp crests.</summary>
+		Triangle = 2
+	}
+
+	/// <summary>Sub-style for the Rotate effect.</summary>
+	public enum RotateStyle {
+		/// <summary>Harmonic pendulum swing / wobble back and forth.</summary>
+		Wobble = 0,
+		/// <summary>Continuous 360-degree rotation.</summary>
+		Spin = 1
+	}
+
+	/// <summary>Sub-style for the Scale / Wobble effect.</summary>
+	public enum ScaleStyle {
+		/// <summary>Squash & stretch wobble (Y expands while X compresses).</summary>
+		SquashAndStretch = 0,
+		/// <summary>Appear transition scaling from 0 to 1 with easing.</summary>
+		PopIn = 1,
+		/// <summary>Disappear transition scaling from 1 to 0 with easing.</summary>
+		PopOut = 2,
+		/// <summary>Uniform breathing/pulsing scale around glyph center.</summary>
+		Pulse = 3
+	}
+
+	/// <summary>Easing function for transition effects (e.g. PopIn/PopOut).</summary>
+	public enum TextEasing {
+		/// <summary>Linear interpolation (constant rate).</summary>
+		Linear = 0,
+		/// <summary>Smooth sine ease out.</summary>
+		Sine = 1,
+		/// <summary>Overshooting ease out for punchy pop animations.</summary>
+		EaseOutBack = 2,
+		/// <summary>Bouncing ease out for falling/dropping effects.</summary>
+		EaseOutBounce = 3,
+		/// <summary>Elastic spring ease out.</summary>
+		EaseOutElastic = 4,
+		/// <summary>Smooth S-curve ease in and out.</summary>
+		EaseInOutSine = 5
+	}
+
+	/// <summary>Sub-style for the Glow / Lighting effect.</summary>
+	public enum GlowStyle {
+		/// <summary>Smooth crossfade between Color A and Color B.</summary>
+		Fade = 0,
+		/// <summary>Traveling light beam / shine sweep using a color ramp.</summary>
+		Shimmer = 1,
+		/// <summary>Irregular flickering like a faulty neon tube.</summary>
+		NeonFlicker = 2
+	}
+
+	/// <summary>Sub-style for the Glitch effect.</summary>
+	public enum GlitchStyle {
+		/// <summary>Position jitter combined with RGB color shifts.</summary>
+		Glitch = 0,
+		/// <summary>Digital matrix scramble decode transition.</summary>
+		Matrix = 1
 	}
 }

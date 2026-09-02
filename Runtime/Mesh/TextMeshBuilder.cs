@@ -548,16 +548,16 @@ namespace Sperlich.Text {
 		private void AddQuad(float3 p0, float3 p1, float3 p2, float3 p3,
 			float2 uv0, float2 uv1, float2 uv2, float2 uv3,
 			float4 c0, float4 c1, float4 c2, float4 c3, float sdfScale, float weightBias, float4 mode,
-			float4 tan = default) {
+			float4 cellRect = default, float4 tan = default) {
 
 			uint b = (uint)vertices.Length;
 			if (tan.x == 0f && tan.y == 0f && tan.z == 0f && tan.w == 0f) tan = new float4(1f, 0f, 0f, -1f);
 			float3 n = new float3(0f, 0f, -1f);
 
-			vertices.Add(Vtx(p0, n, tan, c0, uv0, sdfScale, weightBias, mode));
-			vertices.Add(Vtx(p1, n, tan, c1, uv1, sdfScale, weightBias, mode));
-			vertices.Add(Vtx(p2, n, tan, c2, uv2, sdfScale, weightBias, mode));
-			vertices.Add(Vtx(p3, n, tan, c3, uv3, sdfScale, weightBias, mode));
+			vertices.Add(Vtx(p0, n, tan, c0, uv0, sdfScale, weightBias, mode, cellRect));
+			vertices.Add(Vtx(p1, n, tan, c1, uv1, sdfScale, weightBias, mode, cellRect));
+			vertices.Add(Vtx(p2, n, tan, c2, uv2, sdfScale, weightBias, mode, cellRect));
+			vertices.Add(Vtx(p3, n, tan, c3, uv3, sdfScale, weightBias, mode, cellRect));
 
 			indices.Add(b); indices.Add(b + 1); indices.Add(b + 2);
 			indices.Add(b); indices.Add(b + 2); indices.Add(b + 3);
@@ -598,22 +598,23 @@ namespace Sperlich.Text {
 			float3 n = new float3(0f, 0f, -1f);
 			// uv0.z flagged negative so the shader treats it as a solid fill, not an SDF sample
 			float2 flag = new float2(0.5f, 0.5f);
-			vertices.Add(Vtx(new float3(p0.x, p0.y, 0f), n, tan, color, flag, -1f, 0f, float4.zero));
-			vertices.Add(Vtx(new float3(p1.x, p1.y, 0f), n, tan, color, flag, -1f, 0f, float4.zero));
-			vertices.Add(Vtx(new float3(p2.x, p2.y, 0f), n, tan, color, flag, -1f, 0f, float4.zero));
-			vertices.Add(Vtx(new float3(p3.x, p3.y, 0f), n, tan, color, flag, -1f, 0f, float4.zero));
+			vertices.Add(Vtx(new float3(p0.x, p0.y, 0f), n, tan, color, flag, -1f, 0f, float4.zero, float4.zero));
+			vertices.Add(Vtx(new float3(p1.x, p1.y, 0f), n, tan, color, flag, -1f, 0f, float4.zero, float4.zero));
+			vertices.Add(Vtx(new float3(p2.x, p2.y, 0f), n, tan, color, flag, -1f, 0f, float4.zero, float4.zero));
+			vertices.Add(Vtx(new float3(p3.x, p3.y, 0f), n, tan, color, flag, -1f, 0f, float4.zero, float4.zero));
 			indices.Add(b); indices.Add(b + 1); indices.Add(b + 2);
 			indices.Add(b); indices.Add(b + 2); indices.Add(b + 3);
 		}
 
-		private TextVertex Vtx(float3 pos, float3 n, float4 tan, float4 col, float2 uv, float sdfScale, float weightBias, float4 mode) {
+		private TextVertex Vtx(float3 pos, float3 n, float4 tan, float4 col, float2 uv, float sdfScale, float weightBias, float4 mode, float4 cellRect) {
 			return new TextVertex {
 				position = new float3(pos.x + origin.x, pos.y + origin.y, pos.z),
 				normal = n,
 				tangent = tan,
 				color = col,
 				uv0 = new float4(uv.x, uv.y, sdfScale, weightBias),
-				uv1 = mode
+				uv1 = mode,
+				uv2 = cellRect
 			};
 		}
 
@@ -634,7 +635,8 @@ namespace Sperlich.Text {
 					tangent = new Vector4(t.tangent.x, t.tangent.y, t.tangent.z, t.tangent.w),
 					color = new Color(t.color.x, t.color.y, t.color.z, t.color.w),
 					uv0 = new Vector4(t.uv0.x, t.uv0.y, t.uv0.z, t.uv0.w),
-					uv1 = new Vector4(t.uv1.x, t.uv1.y, t.uv1.z, t.uv1.w)
+					uv1 = new Vector4(t.uv1.x, t.uv1.y, t.uv1.z, t.uv1.w),
+					uv2 = new Vector4(t.uv2.x, t.uv2.y, t.uv2.z, t.uv2.w)
 				};
 				vh.AddVert(v);
 			}

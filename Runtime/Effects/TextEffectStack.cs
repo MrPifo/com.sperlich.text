@@ -36,7 +36,7 @@ namespace Sperlich.Text {
 			}
 		}
 
-		public void Apply(TextMeshBuilder builder, float time, float deltaTime, int totalSourceChars) {
+		public void Apply(TextMeshBuilder builder, GlyphStore store, float time, float deltaTime, int totalSourceChars) {
 			if (builder == null || builder.GlyphQuadCount == 0) return;
 			if (!HasWork && !builder.HasSpanEffects) return;
 
@@ -50,7 +50,7 @@ namespace Sperlich.Text {
 			// component-level effects (whole text)
 			for (int i = 0; i < builtins.Count; i++) {
 				if (builtins[i].Enabled && builtins[i].Effect != BuiltinEffect.None) {
-					RunEffect(builtins[i], -1, verts, quadStart, quadSource, quadEffect, time, totalSourceChars);
+					RunEffect(builtins[i], -1, store, verts, quadStart, quadSource, quadEffect, time, totalSourceChars);
 				}
 			}
 
@@ -60,7 +60,7 @@ namespace Sperlich.Text {
 				for (int q = 0; q < quadEffect.Length; q++) mask |= 1 << quadEffect[q];
 				for (int e = 1; e <= (int)BuiltinEffect.Glitch; e++) {
 					if ((mask & (1 << e)) == 0) continue;
-					RunEffect(DefaultParams((BuiltinEffect)e), e, verts, quadStart, quadSource, quadEffect, time, totalSourceChars);
+					RunEffect(DefaultParams((BuiltinEffect)e), e, store, verts, quadStart, quadSource, quadEffect, time, totalSourceChars);
 				}
 			}
 
@@ -75,12 +75,48 @@ namespace Sperlich.Text {
 
 		private const int RampSamples = 64;
 
-		private static void RunEffect(BuiltinEffectParams p, int filter,
+		private static void RunEffect(BuiltinEffectParams p, int filter, GlyphStore store,
 			NativeArray<TextVertex> verts, NativeArray<int> quadStart, NativeArray<int> quadSource,
 			NativeArray<int> quadEffect, float time, int totalChars) {
 
 			NativeArray<float4> ramp = new NativeArray<float4>(RampSamples, Allocator.TempJob);
 			BuildRamp(p, ramp);
+
+			NativeArray<float4> scrambleAtlas;
+			int scrambleAtlasLen = 0;
+			if (p.Effect == BuiltinEffect.Glitch && p.GlitchStyle == GlitchStyle.Matrix) {
+				const string defaultPool = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()<>{}[]?/\\|~+=";
+				string pool = string.IsNullOrEmpty(p.ScrambleCharacters) ? defaultPool : p.ScrambleCharacters;
+				scrambleAtlas = new NativeArray<float4>(math.max(1, pool.Length), Allocator.TempJob);
+				if (store != null) {
+					float atlasSize = math.max(1f, store.AtlasSize);
+					for (int c = 0; c < pool.Length; c++) {
+						uint cp = pool[c];
+						GlyphData gd = store.GetOrRequest(cp);
+						if (gd.IsWhitespace) continue;
+						scrambleAtlas[scrambleAtlasLen++] = new float4(
+							gd.AtlasRect.x / atlasSize,
+							gd.AtlasRect.y / atlasSize,
+							(gd.AtlasRect.x + gd.AtlasRect.z) / atlasSize,
+							(gd.AtlasRect.y + gd.AtlasRect.w) / atlasSize
+						);
+					}
+				}
+			} else {
+				scrambleAtlas = new NativeArray<float4>(1, Allocator.TempJob);
+			}
+
+			float rad = math.radians(p.Angle);
+			float cosA = math.cos(rad);
+			float sinA = math.sin(rad);
+			float pMin = float.MaxValue;
+			float pMax = float.MinValue;
+			for (int v = 0; v < verts.Length; v++) {
+				float proj = verts[v].position.x * cosA + verts[v].position.y * sinA;
+				if (proj < pMin) pMin = proj;
+				if (proj > pMax) pMax = proj;
+			}
+			if (pMin >= pMax) { pMin = 0f; pMax = 100f; }
 
 			BuiltinEffectJob job = new BuiltinEffectJob {
 				Vertices = verts,
@@ -89,19 +125,34 @@ namespace Sperlich.Text {
 				QuadEffect = quadEffect,
 				EffectFilter = filter,
 				Effect = p.Effect,
+				WaveStyle = p.WaveStyle,
+				RotateStyle = p.RotateStyle,
+				ScaleStyle = p.ScaleStyle,
+				Easing = p.Easing,
+				GlowStyle = p.GlowStyle,
+				GlitchStyle = p.GlitchStyle,
 				Time = time,
 				Amplitude = p.Amplitude,
 				Frequency = p.Frequency,
 				Speed = p.Speed,
 				Amount = p.Amount,
+				Angle = p.Angle,
+				Inverse = p.Inverse,
+				Once = p.Once,
+				Progress = p.Progress,
 				ColorA = new float4(p.ColorA.r, p.ColorA.g, p.ColorA.b, p.ColorA.a),
 				ColorB = new float4(p.ColorB.r, p.ColorB.g, p.ColorB.b, p.ColorB.a),
 				TotalChars = totalChars,
+				ProjectedMin = pMin,
+				ProjectedMax = pMax,
+				ScrambleAtlas = scrambleAtlas,
+				ScrambleAtlasLen = scrambleAtlasLen,
 				Ramp = ramp,
 				RampLen = RampSamples
 			};
 			job.Schedule(quadStart.Length, 32).Complete();
 			ramp.Dispose();
+			if (scrambleAtlas.IsCreated) scrambleAtlas.Dispose();
 		}
 
 		/// <summary>Bakes the effect's <see cref="BuiltinEffectParams.Ramp"/> gradient into an evenly spaced

@@ -13,7 +13,7 @@ namespace Sperlich.Text.EditorTools {
 	/// when the "TMP Essential Resources" are missing — those supply the <c>TMP Settings</c> asset and the
 	/// TMP shaders that <c>CreateFontAsset</c> dereferences.
 	/// This bootstrap imports those resources automatically on the first editor load that finds them
-	/// missing, then rebuilds every <see cref="SperlichText"/> so labels show up without a scene reload.
+	/// missing, then rebuilds every <see cref="SText"/> so labels show up without a scene reload.
 	/// Weg A only: TMP stays referenced. Replacing <see cref="FontAccess"/> with an msdfgen path (Weg B)
 	/// would drop this file.
 	/// </summary>
@@ -63,7 +63,7 @@ namespace Sperlich.Text.EditorTools {
 
 		private static void RefreshAllLabels() {
 			GlyphStoreRegistry.EditorPurgeAll();
-			foreach (SperlichText label in Object.FindObjectsByType<SperlichText>(
+			foreach (SText label in Object.FindObjectsByType<SText>(
 				         FindObjectsInactive.Include, FindObjectsSortMode.None)) {
 				label.EditorRebindFont();
 			}

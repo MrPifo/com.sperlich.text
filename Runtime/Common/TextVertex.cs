@@ -31,14 +31,18 @@ namespace Sperlich.Text {
 		/// <summary>Free channel for effects / gradient params / mask coordinates.</summary>
 		public float4 uv1;
 
-		/// <summary>Vertex buffer descriptor matching this struct exactly (22 floats).</summary>
+		/// <summary>Atlas glyph bounds rect (u0, v0, u1, v1) for shader clamping.</summary>
+		public float4 uv2;
+
+		/// <summary>Vertex buffer descriptor matching this struct exactly (26 floats).</summary>
 		public static readonly VertexAttributeDescriptor[] Layout = {
 			new VertexAttributeDescriptor(VertexAttribute.Position, VertexAttributeFormat.Float32, 3),
 			new VertexAttributeDescriptor(VertexAttribute.Normal, VertexAttributeFormat.Float32, 3),
 			new VertexAttributeDescriptor(VertexAttribute.Tangent, VertexAttributeFormat.Float32, 4),
 			new VertexAttributeDescriptor(VertexAttribute.Color, VertexAttributeFormat.Float32, 4),
 			new VertexAttributeDescriptor(VertexAttribute.TexCoord0, VertexAttributeFormat.Float32, 4),
-			new VertexAttributeDescriptor(VertexAttribute.TexCoord1, VertexAttributeFormat.Float32, 4)
+			new VertexAttributeDescriptor(VertexAttribute.TexCoord1, VertexAttributeFormat.Float32, 4),
+			new VertexAttributeDescriptor(VertexAttribute.TexCoord2, VertexAttributeFormat.Float32, 4)
 		};
 	}
 }

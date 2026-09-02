@@ -15,10 +15,10 @@ namespace Sperlich.Text {
 	}
 
 	/// <summary>
-	/// Optional component (plan module 11). Bolt onto the same GameObject as a <see cref="SperlichText"/>.
+	/// Optional component (plan module 11). Bolt onto the same GameObject as a <see cref="SText"/>.
 	/// Does bounds-based hit testing against link spans (no physics raycast) and raises hover / click events.
 	/// </summary>
-	[RequireComponent(typeof(SperlichText))]
+	[RequireComponent(typeof(SText))]
 	public sealed class TextInteraction : MonoBehaviour, IPointerMoveHandler, IPointerClickHandler, IPointerExitHandler {
 
 		[Serializable] public class LinkEvent : UnityEngine.Events.UnityEvent<string> { }
@@ -27,12 +27,12 @@ namespace Sperlich.Text {
 		public LinkEvent onLinkEnter = new();
 		public LinkEvent onLinkExit = new();
 
-		private SperlichText text;
+		private SText text;
 		private readonly List<LinkHitbox> hitboxes = new();
 		private string hovered;
 
 		private void Awake() {
-			text = GetComponent<SperlichText>();
+			text = GetComponent<SText>();
 		}
 
 		private void OnEnable() {

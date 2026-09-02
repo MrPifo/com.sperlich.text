@@ -75,14 +75,70 @@ namespace Sperlich.Text {
 			}
 		}
 
+		/// <summary>Scales glyph quad <paramref name="glyph"/> uniformly about its center by <paramref name="mul"/>.</summary>
 		public void Scale(int glyph, float mul) {
+			Scale(glyph, new Vector2(mul, mul));
+		}
+
+		/// <summary>Scales glyph quad <paramref name="glyph"/> non-uniformly about its center by <paramref name="scale"/> (X, Y).</summary>
+		public void Scale(int glyph, Vector2 scale) {
 			int s = quadStart[glyph];
 			Vector2 c = GetCenter(glyph);
 			for (int i = 0; i < 4; i++) {
 				TextVertex v = vertices[s + i];
-				v.position.x = c.x + (v.position.x - c.x) * mul;
-				v.position.y = c.y + (v.position.y - c.y) * mul;
+				v.position.x = c.x + (v.position.x - c.x) * scale.x;
+				v.position.y = c.y + (v.position.y - c.y) * scale.y;
 				vertices[s + i] = v;
+			}
+		}
+
+		/// <summary>Applies a squash & stretch wobble deformation to glyph <paramref name="glyph"/> (conserves visual area).</summary>
+		public void SquashAndStretch(int glyph, float stretchY) {
+			float y = math.max(0.01f, 1f + stretchY);
+			float x = 1f / y;
+			Scale(glyph, new Vector2(x, y));
+		}
+
+		/// <summary>Evaluates an easing function at normalized time <paramref name="t"/> in 0..1.</summary>
+		public static float EvaluateEasing(float t, TextEasing easing) {
+			t = math.saturate(t);
+			switch (easing) {
+				case TextEasing.Linear:
+					return t;
+				case TextEasing.Sine:
+					return math.sin(t * (math.PI * 0.5f));
+				case TextEasing.EaseOutBack: {
+					const float c1 = 1.70158f;
+					const float c3 = c1 + 1f;
+					float tMinus1 = t - 1f;
+					return 1f + c3 * tMinus1 * tMinus1 * tMinus1 + c1 * tMinus1 * tMinus1;
+				}
+				case TextEasing.EaseOutBounce: {
+					const float n1 = 7.5625f;
+					const float d1 = 2.75f;
+					if (t < 1f / d1) {
+						return n1 * t * t;
+					} else if (t < 2f / d1) {
+						t -= 1.5f / d1;
+						return n1 * t * t + 0.75f;
+					} else if (t < 2.5f / d1) {
+						t -= 2.25f / d1;
+						return n1 * t * t + 0.9375f;
+					} else {
+						t -= 2.625f / d1;
+						return n1 * t * t + 0.984375f;
+					}
+				}
+				case TextEasing.EaseOutElastic: {
+					const float c4 = (2f * math.PI) / 3f;
+					if (t <= 0f) return 0f;
+					if (t >= 1f) return 1f;
+					return math.pow(2f, -10f * t) * math.sin((t * 10f - 0.75f) * c4) + 1f;
+				}
+				case TextEasing.EaseInOutSine:
+					return -(math.cos(math.PI * t) - 1f) * 0.5f;
+				default:
+					return t;
 			}
 		}
 
