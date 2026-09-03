@@ -115,6 +115,12 @@ namespace Sperlich.Text {
 			set { if (m_text != value) { m_text = value ?? string.Empty; textDirty = layoutDirty = true; RestartReveal(); SetVerticesDirty(); } }
 		}
 
+		/// <summary>Convenience text getter/setter matching TMP / UnityEngine.UI.Text API.</summary>
+		public string text {
+			get => Text;
+			set => Text = value;
+		}
+
 		public FontDefinition Font {
 			get => m_font;
 			set { if (m_font != value) { m_font = value; RebindFont(); textDirty = layoutDirty = true; SetVerticesDirty(); SetMaterialDirty(); } }
