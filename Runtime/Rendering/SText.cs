@@ -130,6 +130,16 @@ namespace Sperlich.Text {
 		public TextOverflow Overflow { get => m_overflow; set { m_overflow = value; layoutDirty = true; SetVerticesDirty(); } }
 		public TextWrap Wrap { get => m_wrap; set { m_wrap = value; layoutDirty = true; SetVerticesDirty(); } }
 
+		/// <summary>Convenience alpha getter/setter matching TMP API.</summary>
+		public float alpha {
+			get => color.a;
+			set {
+				var c = color;
+				c.a = value;
+				color = c;
+			}
+		}
+
 		/// <summary>Whole-label style flags (bold / italic / underline / strikethrough / case), like TMP's "Font Style".</summary>
 		public TextFontStyle FontStyle {
 			get => m_fontStyle;
