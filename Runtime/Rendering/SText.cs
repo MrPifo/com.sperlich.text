@@ -121,6 +121,9 @@ namespace Sperlich.Text {
 			set => Text = value;
 		}
 
+		/// <summary>Sets the text content (TMP compatibility).</summary>
+		public void SetText(string newText) => Text = newText;
+
 		public FontDefinition Font {
 			get => m_font;
 			set { if (m_font != value) { m_font = value; RebindFont(); textDirty = layoutDirty = true; SetVerticesDirty(); SetMaterialDirty(); } }
