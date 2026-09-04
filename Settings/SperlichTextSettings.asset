@@ -12,7 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 6154c5d146013a44a85b31e08e0a999d, type: 3}
   m_Name: SperlichTextSettings
   m_EditorClassIdentifier: Sperlich.Text::Sperlich.Text.SperlichTextSettings
-  defaultFont: {fileID: 11400000, guid: 11f47795ac85b064a89d4f56c8fbc44f, type: 2}
+  defaultFont: {fileID: 11400000, guid: c0cb8d27f88a01a439c8e0682ddaf81b, type: 2}
   defaultFontSize: 24
   defaultColor: {r: 1, g: 1, b: 1, a: 1}
   glyphsPerFrame: 8

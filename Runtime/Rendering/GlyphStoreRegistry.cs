@@ -19,9 +19,14 @@ namespace Sperlich.Text {
 		public static GlyphStore Acquire(FontDefinition font) {
 			if (font == null) return null;
 			if (stores.TryGetValue(font, out Entry e)) {
-				e.RefCount++;
-				stores[font] = e;
-				return e.Store;
+				if (e.Store != null && e.Store.Fonts != null && e.Store.Fonts.IsReady) {
+					e.RefCount++;
+					stores[font] = e;
+					return e.Store;
+				}
+				// Stale or destroyed runtime texture from previous domain reload
+				e.Store?.Fonts?.Dispose();
+				stores.Remove(font);
 			}
 
 			IFontFaceSource access;

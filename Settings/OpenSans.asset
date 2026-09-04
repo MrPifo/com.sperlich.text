@@ -1,0 +1,32 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!114 &11400000
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 0}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: eb9b4be27899ab5498d23d6070b76a52, type: 3}
+  m_Name: OpenSans
+  m_EditorClassIdentifier: Sperlich.Text::Sperlich.Text.FontDefinition
+  primary: {fileID: 12800000, guid: 7be782fc5f6cdbf48a627a1d40ea9388, type: 3}
+  fallbacks: []
+  samplingPointSize: 90
+  sdfPadding: 9
+  atlasResolution: 2048
+  fieldKind: 0
+  msdfCharset: 2
+  msdfExtraChars: 
+  msdfEmSize: 48
+  msdfPixelRange: 6
+  msdfGlowPadding: 16
+  msdfMaxAtlas: 2048
+  msdfEdgeAngle: 3
+  msdfErrorCorrection: 1
+  msdfSignCorrection: 1
+  msdfAggressiveErrorCorrection: 0
+  msdfResolveOverlaps: 1
+  bakedData: {fileID: 0}

@@ -21,11 +21,18 @@ namespace Sperlich.Text {
 
 		public FontDefinition Definition => definition;
 		public int FaceCount => assets.Count;
-		public bool IsReady => assets.Count > 0 && assets[0] != null;
+		public bool IsReady => assets.Count > 0 && assets[0] != null && assets[0].atlasTexture != null;
 		public bool SupportsDynamicGeneration => true;
 		public GlyphFieldKind FieldKind => definition.fieldKind;
 
-		private TMP_FontAsset Primary => assets.Count > 0 ? assets[0] : null;
+		private TMP_FontAsset Primary {
+			get {
+				if (assets.Count == 0 || assets[0] == null || assets[0].atlasTexture == null) {
+					BuildAssets();
+				}
+				return assets.Count > 0 ? assets[0] : null;
+			}
+		}
 		public Texture AtlasTexture => Primary != null ? Primary.atlasTexture : null;
 		public int AtlasSize => Primary != null ? Primary.atlasWidth : definition.atlasSize;
 		private int Padding => Primary != null ? Primary.atlasPadding : definition.sdfPadding;
@@ -45,6 +52,14 @@ namespace Sperlich.Text {
 		}
 
 		private void BuildAssets() {
+			for (int i = 0; i < assets.Count; i++) {
+				if (assets[i] != null) {
+					if (Application.isPlaying) Object.Destroy(assets[i]);
+					else Object.DestroyImmediate(assets[i]);
+				}
+			}
+			assets.Clear();
+
 			GlyphRenderMode mode = GlyphRenderMode.SDFAA;
 			int sampling = Mathf.Clamp(definition.samplingPointSize, 16, 200);
 			int padding = Mathf.Clamp(definition.sdfPadding, 4, 32);

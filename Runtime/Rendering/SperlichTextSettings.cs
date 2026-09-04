@@ -33,6 +33,19 @@ namespace Sperlich.Text {
 			if (!triedLoad) {
 				triedLoad = true;
 				cached = Resources.Load<SperlichTextSettings>("SperlichTextSettings");
+#if UNITY_EDITOR
+				if (cached == null) {
+					cached = UnityEditor.AssetDatabase.LoadAssetAtPath<SperlichTextSettings>(
+						"Assets/com.sperlich.text/Settings/SperlichTextSettings.asset");
+					if (cached == null) {
+						string[] guids = UnityEditor.AssetDatabase.FindAssets("t:SperlichTextSettings");
+						if (guids.Length > 0) {
+							string path = UnityEditor.AssetDatabase.GUIDToAssetPath(guids[0]);
+							cached = UnityEditor.AssetDatabase.LoadAssetAtPath<SperlichTextSettings>(path);
+						}
+					}
+				}
+#endif
 			}
 			return cached;
 		}
