@@ -50,8 +50,13 @@ namespace Sperlich.Text.EditorTools {
 
 			// ---- Layout (sizing folded in) -----------------------------------------------------
 			var layout = Section(root, "LAYOUT", true);
-			layout.Add(col.Property(serializedObject.FindProperty("m_fontSize"), "Font Size"));
+			VisualElement fontSizeRow = col.Property(serializedObject.FindProperty("m_fontSize"), "Font Size");
+			layout.Add(fontSizeRow);
 			layout.Add(BoolRow("m_autoSize", "Auto Size"));
+			// Auto Size solves its own size within Min/Max -- Font Size is never read while it's on, so grey
+			// it out instead of leaving a field that looks live but silently does nothing.
+			DisableWhen(fontSizeRow, "m_autoSize", invert: true,
+				tooltip: "No effect while Auto Size is on -- the size is solved automatically within Min/Max instead.");
 			var autoBox = new VisualElement();
 			autoBox.Add(col.Property(serializedObject.FindProperty("m_autoSizeMin"), "Min", indent: 1));
 			autoBox.Add(col.Property(serializedObject.FindProperty("m_autoSizeMax"), "Max", indent: 1));
@@ -350,6 +355,14 @@ namespace Sperlich.Text.EditorTools {
 						ramp.gradientValue = BuiltinEffectParams.CreateRainbowGradient();
 					}
 					el.FindPropertyRelative("Inverse").boolValue = false;
+					el.FindPropertyRelative("Once").boolValue = false;
+					el.FindPropertyRelative("Progress").floatValue = 0f;
+					break;
+				case BuiltinEffect.Blink:
+					spd.floatValue = 2f;
+					ca.colorValue = new Color(1f, 1f, 1f, 0.15f); // min alpha
+					cb.colorValue = Color.white;                  // max alpha
+					el.FindPropertyRelative("Easing").enumValueIndex = (int)TextEasing.EaseInOutSine;
 					el.FindPropertyRelative("Once").boolValue = false;
 					el.FindPropertyRelative("Progress").floatValue = 0f;
 					break;
@@ -725,6 +738,22 @@ namespace Sperlich.Text.EditorTools {
 					host.TrackPropertyValue(once, _ => UpdateGlitchVisibility());
 					break;
 				}
+				case BuiltinEffect.Blink: {
+					// Use the color swatches' own alpha channel for min/max alpha -- the "just alpha" shortcut
+					// from the <blink min="" max=""> tag attribute is just leaving ColorA/ColorB.rgb at white.
+					host.Add(ColorRow(ca, "Min (Color A)"));
+					host.Add(ColorRow(cb, "Max (Color B)"));
+					host.Add(effectCol.Property(spd, "Speed"));
+					host.Add(effectCol.Property(el.FindPropertyRelative("Easing"), "Easing"));
+					host.Add(effectCol.Property(once, "Once"));
+
+					var blinkProgressRow = PercentSliderRow(progress, "Progress");
+					host.Add(blinkProgressRow);
+					void UpdateBlinkProg() => blinkProgressRow.style.display = once.boolValue ? DisplayStyle.Flex : DisplayStyle.None;
+					UpdateBlinkProg();
+					blinkProgressRow.TrackPropertyValue(once, _ => UpdateBlinkProg());
+					break;
+				}
 				default:
 					host.Add(new Label("This entry does nothing (effect = None).") {
 						style = { fontSize = 10, color = SperlichEditorTheme.TextMuted, unityFontStyleAndWeight = FontStyle.Italic }
@@ -739,6 +768,18 @@ namespace Sperlich.Text.EditorTools {
 			void Apply() => box.style.display = p.boolValue ? DisplayStyle.Flex : DisplayStyle.None;
 			Apply();
 			box.TrackPropertyValue(p, _ => Apply());
+		}
+
+		/// <summary>Greys out (but keeps visible) <paramref name="row"/> while <paramref name="boolProp"/> is
+		/// true (or false when <paramref name="invert"/>) -- for a field that's still meaningful to see, just not
+		/// editable/relevant right now, unlike <see cref="ShowWhen"/> which hides the row entirely.</summary>
+		private void DisableWhen(VisualElement row, string boolProp, bool invert = false, string tooltip = null) {
+			SerializedProperty p = serializedObject.FindProperty(boolProp);
+			if (p == null) return;
+			if (!string.IsNullOrEmpty(tooltip)) row.tooltip = tooltip;
+			void Apply() => row.SetEnabled(invert ? !p.boolValue : p.boolValue);
+			Apply();
+			row.TrackPropertyValue(p, _ => Apply());
 		}
 
 		// ============================ icon-button enum ========================================
@@ -772,6 +813,16 @@ namespace Sperlich.Text.EditorTools {
 				b.style.alignItems = Align.Center;
 				SperlichEditorWidgets.SetRadius(b, 3);
 				SperlichEditorWidgets.SetHoverCursor(b, MouseCursor.Link);
+
+				// Hover tint independent of Refresh()'s selected-state colors, same pattern as CreateFlagButtons.
+				b.RegisterCallback<MouseEnterEvent>(_ => {
+					bool on = enumProp.enumValueIndex == idx;
+					b.style.backgroundColor = on
+						? new Color(Accent.r, Accent.g, Accent.b, 0.26f)
+						: Color.Lerp(SperlichEditorTheme.ButtonBg, Color.white, 0.07f);
+				});
+				b.RegisterCallback<MouseLeaveEvent>(_ => Refresh());
+				SperlichEditorWidgets.ApplyHoverJuice(b, "background-color", "border-color");
 
 				b.generateVisualContent += mgc => {
 					Painter2D p = mgc.painter2D;

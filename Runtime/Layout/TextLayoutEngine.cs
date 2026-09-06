@@ -8,6 +8,8 @@ namespace Sperlich.Text {
 	public struct TextLayoutInput {
 		public string Text;
 		public List<StyleSpan> Spans;
+		public List<InlineInsert> Inserts;   // sprite/glyph placeholder chars, indexed by CharIndex
+		public SpriteGlyphAsset SpriteAsset; // resolved atlas for <sprite="name"> tags; null = unresolved, notdef box
 		public GlyphStore Glyphs;
 
 		public float BaseFontSize;
@@ -97,6 +99,7 @@ namespace Sperlich.Text {
 			GlyphStore store = input.Glyphs;
 
 			int spanIndex = 0;
+			int insertPtr = 0;
 			char prevChar = '\0';
 			uint prevGlyphIndex = 0;
 			int prevFace = -1;
@@ -121,14 +124,17 @@ namespace Sperlich.Text {
 				GlyphData data;
 				if (inlineObject) {
 					fm = store.Fonts.PrimaryMetrics;
-					float box = fontSize;
-					data = new GlyphData {
-						Unicode = unicode,
-						Advance = box,
-						Size = new float2(box, box),
-						Bearing = new float2(0f, box * 0.8f),
-						IsResolved = true
-					};
+					float inlineSampling = fm.IsValid ? fm.SamplingPointSize : store.Fonts.Definition.samplingPointSize;
+					data = ResolveInlineObject(input, i, unicode, fontSize, inlineSampling, ref insertPtr, out string fallbackLabel);
+					if (fallbackLabel != null) {
+						// <glyph:ActionName> resolved to a text label instead of an icon (no sprite registered
+						// for the active device) -- expand into real shaped glyphs right here instead of the
+						// single-quad work.Add below, then skip straight to the next input character.
+						StyleState labelStyle = style;
+						AppendFallbackLabelGlyphs(input, store, fallbackLabel, i, spanIndex, labelStyle, fontSize,
+							ref prevChar, ref prevGlyphIndex, ref prevFace);
+						continue;
+					}
 				} else if (LineBreaker.IsSoftHyphen(c)) {
 					fm = store.Fonts.PrimaryMetrics;
 					data = GlyphData.Whitespace(unicode, 0f);
@@ -177,6 +183,167 @@ namespace Sperlich.Text {
 				});
 
 				prevChar = c;
+				prevGlyphIndex = data.GlyphIndex;
+				prevFace = data.FaceIndex;
+			}
+		}
+
+		/// <summary>Resolves the placeholder char at <paramref name="charIndex"/> against the matching
+		/// <see cref="InlineInsert"/> (if any). Three outcomes: a named sprite that resolves gets a real
+		/// <see cref="GlyphData.SpriteUVRect"/> (covers both <c>&lt;sprite="name"&gt;</c> and a
+		/// <c>&lt;glyph:...&gt;</c>/<c>@Action@</c> whose <see cref="GlyphActionRegistry"/> device profile has
+		/// an icon for the active device); a <c>&lt;glyph:...&gt;</c> with no icon for that device sets
+		/// <paramref name="fallbackLabel"/> instead, and the caller (<see cref="BuildWorkGlyphs"/>) expands it
+		/// into real text glyphs rather than using the returned <see cref="GlyphData"/>; anything else (an
+		/// unknown sprite name, or no <see cref="GlyphActionRegistry"/> configured at all) falls back to the
+		/// blank/notdef box so the gap stays visible instead of silently vanishing.</summary>
+		private static GlyphData ResolveInlineObject(in TextLayoutInput input, int charIndex, uint unicode, float fontSize,
+			float samplingPointSize, ref int insertPtr, out string fallbackLabel) {
+
+			fallbackLabel = null;
+			List<InlineInsert> inserts = input.Inserts;
+			InlineInsert? found = null;
+			if (inserts != null) {
+				while (insertPtr < inserts.Count && inserts[insertPtr].CharIndex < charIndex) insertPtr++;
+				if (insertPtr < inserts.Count && inserts[insertPtr].CharIndex == charIndex) {
+					found = inserts[insertPtr];
+					insertPtr++;
+				}
+			}
+
+			// GlyphData.Advance/Size/Bearing are sampling-point-size units everywhere else in the pipeline
+			// (both the pen march in this file and TextMeshBuilder's glyph quads multiply them by
+			// UnitScale = fontSize/samplingPointSize to get final pixels) -- inline objects have to follow
+			// the same convention, so the *final* pixel size computed below is divided back down by
+			// unitScale before being stored. Storing final pixels directly here previously made the pen
+			// under-advance (unitScale < 1 shrank an already-final Advance a second time downstream),
+			// which is what caused the sprite to overlap the text right after it.
+			float unitScale = samplingPointSize > 0f ? fontSize / samplingPointSize : 1f;
+			float invUnit = unitScale > 0f ? 1f / unitScale : 1f;
+
+			string spriteName = null;
+			if (found.HasValue) {
+				InlineInsert ins = found.Value;
+				if (ins.IsActionGlyph) {
+					GlyphActionRegistry registry = GlyphActionRegistry.GetDefault();
+					if (registry != null) {
+						string deviceId = !string.IsNullOrEmpty(ins.DeviceOverride) ? ins.DeviceOverride : GlyphDeviceContext.ActiveDeviceId;
+						registry.TryResolve(deviceId, ins.Name, out spriteName, out fallbackLabel);
+					}
+				} else {
+					spriteName = ins.Name;
+				}
+			}
+
+			if (found.HasValue && !string.IsNullOrEmpty(spriteName) && input.SpriteAsset != null &&
+				input.SpriteAsset.TryGet(spriteName, out SpriteGlyphEntry entry)) {
+
+				fallbackLabel = null; // an icon exists after all -- the label above was only a provisional fallback
+				InlineInsert ins = found.Value;
+				float targetSize = ins.AbsoluteSizePx > 0f ? ins.AbsoluteSizePx : fontSize * math.max(0.01f, ins.SizeMultiplier);
+				float aspect = math.max(0.0001f, entry.Aspect);
+				float w = (aspect >= 1f ? targetSize : targetSize * aspect) * invUnit;
+				float h = (aspect >= 1f ? targetSize / aspect : targetSize) * invUnit;
+
+				Texture2D atlas = input.SpriteAsset.Atlas;
+				float atlasW = atlas != null ? atlas.width : 1f;
+				float atlasH = atlas != null ? atlas.height : 1f;
+				Rect px = entry.PixelRect;
+
+				// Inset the sampled rect by half a texel on every side. Without this, a UV sitting exactly on
+				// the rect's edge (its natural value at px.xMin/xMax) makes the shader's bilinear tex2D sample
+				// blend in whatever sits just outside the packed rect -- the atlas packer's inter-sprite
+				// padding gap, or a neighbouring icon -- which reads as a thin dark/coloured seam along every
+				// tile edge once the sprite is drawn at any size other than exactly 1:1 texel-to-pixel. The
+				// inset moves the sampled UV to the first/last texel's own centre, so bilinear filtering never
+				// reaches past this icon's own pixels, regardless of packer padding or render scale.
+				float insetU = 0.5f / atlasW;
+				float insetV = 0.5f / atlasH;
+				float u0 = px.xMin / atlasW + insetU;
+				float v0 = px.yMin / atlasH + insetV;
+				float u1 = px.xMax / atlasW - insetU;
+				float v1 = px.yMax / atlasH - insetV;
+
+				return new GlyphData {
+					Unicode = unicode,
+					Advance = w,
+					Size = new float2(w, h),
+					Bearing = new float2(0f, h * 0.8f),
+					IsResolved = true,
+					IsSprite = true,
+					SpriteUVRect = new float4(u0, v0, u1, v1)
+				};
+			}
+
+			if (fallbackLabel != null) return default; // BuildWorkGlyphs expands this into real text glyphs instead
+
+			// Nothing could be resolved at all: an unknown/unfound <sprite="name">, or a <glyph:...>/@Action@
+			// with no GlyphActionRegistry configured in the project (TryResolve otherwise always returns SOME
+			// fallback label, so reaching here specifically means "there's no registry to ask"). IsResolved =
+			// false so TextMeshBuilder draws the existing hollow "notdef" box instead of reserving silent,
+			// invisible blank space -- a completely unconfigured <glyph:...> used to vanish without a trace,
+			// which is exactly the confusing case a hollow box exists to make visible for <sprite> already.
+			float box = fontSize * invUnit;
+			return new GlyphData {
+				Unicode = unicode,
+				Advance = box,
+				Size = new float2(box, box),
+				Bearing = new float2(0f, box * 0.8f),
+				IsResolved = false
+			};
+		}
+
+		/// <summary>Expands a <c>&lt;glyph:ActionName&gt;</c> fallback text label (e.g. "Space", "[Jump]") into
+		/// real shaped <see cref="WorkGlyph"/>s at the placeholder's position, one per label character, all
+		/// sharing <see cref="WorkGlyph.Source"/> = the placeholder's own stripped-text index. Downstream
+		/// consumers that key off <c>SourceIndex</c> ranges (caret/selection, link hitboxes, typewriter reveal)
+		/// handle several quads sharing one source index correctly -- see the plan's research notes; the only
+		/// user-visible effect is the label acting as one atomic unit for caret placement and reveal timing.
+		/// The whole label is treated as a single non-breakable run (only its leading edge is a wrap
+		/// opportunity) so a multi-word label like "Left Trigger" never splits across two lines.</summary>
+		private void AppendFallbackLabelGlyphs(in TextLayoutInput input, GlyphStore store, string label, int charIndex,
+			int spanIndex, in StyleState style, float fontSize, ref char prevChar, ref uint prevGlyphIndex, ref int prevFace) {
+
+			for (int li = 0; li < label.Length; li++) {
+				char lc = label[li];
+				uint unicode = ApplyCase(lc, style.Case);
+				GlyphData data = store.GetOrRequest(unicode);
+				if (!data.IsResolved) result.HasUnresolvedGlyphs = true;
+				FaceMetrics fm = store.Fonts.GetMetrics(math.max(0, data.FaceIndex));
+
+				float sampling = fm.IsValid ? fm.SamplingPointSize : store.Fonts.Definition.samplingPointSize;
+				float unitScale = sampling > 0f ? fontSize / sampling : 0f;
+				float ascent = fm.IsValid ? fm.AscentLine * unitScale : fontSize * 0.8f;
+				float descent = fm.IsValid ? -fm.DescentLine * unitScale : fontSize * 0.2f;
+
+				float trackingEm = style.LetterSpacingEm + input.ExtraTrackingEm;
+
+				float kerning = 0f;
+				if (data.IsResolved && data.FaceIndex == prevFace && prevGlyphIndex != 0 && data.GlyphIndex != 0) {
+					kerning = store.Fonts.GetKerning(data.FaceIndex, prevGlyphIndex, data.GlyphIndex) * unitScale;
+				}
+
+				float wordExtraPx = lc == ' ' ? input.WordSpacingEm * fontSize : 0f;
+
+				work.Add(new WorkGlyph {
+					Source = charIndex,
+					Span = spanIndex,
+					Unicode = unicode,
+					FontSize = fontSize,
+					UnitScale = unitScale,
+					BaselineShiftPx = style.BaselineShift * fontSize,
+					TrackingPx = trackingEm * fontSize + kerning + wordExtraPx,
+					Ascent = ascent,
+					Descent = descent,
+					Data = data,
+					Color = style.Color,
+					IsInlineObject = false, // real shaped text now, not a synthetic icon/box
+					MandatoryBreakAfter = false,
+					BreakBefore = li == 0 && LineBreaker.CanBreakBetween(prevChar, lc),
+					IsSpace = false // never a wrap point inside the label -- the whole label is one atomic run
+				});
+
+				prevChar = lc;
 				prevGlyphIndex = data.GlyphIndex;
 				prevFace = data.FaceIndex;
 			}

@@ -54,10 +54,38 @@ namespace Sperlich.Text {
 					if (close > i) {
 						string raw = source.Substring(i + 1, close - i - 1);
 						if (IsTagLike(raw)) {
+							string peekName = TagName(raw);
+							if (peekName == "sprite" || peekName == "glyph") {
+								// <sprite>/<glyph> are self-closing and insert exactly one placeholder char
+								// that visually belongs to whatever run is currently open (e.g. inside a
+								// <wave>...</wave>) -- do NOT flush/reset spanStart around it like every
+								// other tag: that would push the placeholder's char index into the gap
+								// between spans, where SpanAt() falls back to the *last* span's style
+								// instead of the wave/color/etc. span it's actually inside.
+								ApplyTag(raw);
+								i = close + 1;
+								continue;
+							}
 							FlushSpan(ref spanStart, ref spanStyle);
 							ApplyTag(raw);
 							spanStyle = stack.Peek();
 							spanStart = sb.Length;
+							i = close + 1;
+							continue;
+						}
+					}
+				}
+
+				// @ActionName@ -- shorthand for <glyph:ActionName>, always resolved via the active device
+				// (GlyphDeviceContext.ActiveDeviceId), no attributes. Only matches a single "word" (no
+				// whitespace, no nested '@') so a stray '@' (an email address, "@" used as punctuation)
+				// passes through as a literal character instead of being swallowed.
+				if (richText && c == '@') {
+					int close = source.IndexOf('@', i + 1);
+					if (close > i + 1) {
+						string actionName = source.Substring(i + 1, close - i - 1);
+						if (IsValidActionToken(actionName)) {
+							ApplyInlineObjectTag("glyph:" + actionName, isGlyph: true);
 							i = close + 1;
 							continue;
 						}
@@ -99,19 +127,68 @@ namespace Sperlich.Text {
 			return char.IsLetter(first);
 		}
 
+		/// <summary>Tag name only, stopping at the first <c>=</c>/<c>:</c>/whitespace -- unlike a plain
+		/// eq/colon split, this also isolates the name correctly when the tag carries space-separated
+		/// attributes after it (e.g. <c>wave amp="1.5"</c>, <c>sprite="x" size="1.1"</c>). Safe to use for
+		/// every existing tag too: none of their names contain internal spaces, so this agrees with the old
+		/// "first =/: only" split for all of them, it just additionally stops at whitespace.</summary>
+		private static string TagName(string raw) {
+			if (raw.Length == 0) return string.Empty;
+			int end = raw.Length;
+			for (int k = 0; k < raw.Length; k++) {
+				char ch = raw[k];
+				if (ch == '=' || ch == ':' || char.IsWhiteSpace(ch)) { end = k; break; }
+			}
+			return raw.Substring(0, end).ToLowerInvariant();
+		}
+
+		/// <summary>The 7 animated <see cref="BuiltinEffect"/> tags that accept per-tag attributes
+		/// (<c>amp</c>/<c>freq</c>/<c>speed</c>/<c>once</c>/<c>progress</c>/<c>ease</c>/<c>style</c>/...).</summary>
+		private static bool TryGetParameterizedEffect(string tagName, out BuiltinEffect effect) {
+			switch (tagName) {
+				case "wave": effect = BuiltinEffect.Wave; return true;
+				case "shake": effect = BuiltinEffect.Shake; return true;
+				case "pulse": effect = BuiltinEffect.Pulse; return true;
+				case "rainbow": effect = BuiltinEffect.Rainbow; return true;
+				case "glowpulse": effect = BuiltinEffect.Glow; return true;
+				case "glitch": effect = BuiltinEffect.Glitch; return true;
+				case "blink": effect = BuiltinEffect.Blink; return true;
+				default: effect = BuiltinEffect.None; return false;
+			}
+		}
+
 		private void ApplyTag(string raw) {
 			bool closing = raw[0] == '/';
 			string body = closing ? raw.Substring(1) : raw;
+			string name = TagName(body);
 
-			string name;
+			if (closing) { PopStyle(name); return; }
+
+			// "sprite"/"glyph" are self-closing and never change the style state, so -- unlike every other
+			// tag here -- this must NOT push a stack frame: doing so leaves an extra, unmatched frame that
+			// the *next* unrelated closing tag (e.g. </color>) would pop instead of its own, letting that
+			// color/style leak into everything after it.
+			if (name == "sprite" || name == "glyph") {
+				ApplyInlineObjectTag(body, isGlyph: name == "glyph");
+				return;
+			}
+
+			// <wave>/<shake>/<pulse>/<rainbow>/<glowpulse>/<glitch>/<blink> optionally carry space-separated
+			// attributes (amp=, freq=, speed=, once=, progress=, ease=, style=, min=/max=/color=/color2= for
+			// blink) that override the shared component-wide default preset for just this run -- these DO
+			// push a stack frame (they have closing tags), unlike sprite/glyph above.
+			if (TryGetParameterizedEffect(name, out BuiltinEffect parameterizedEffect)) {
+				StyleState es = stack.Peek();
+				ApplyEffectTag(ref es, body, parameterizedEffect);
+				stack.Push(es);
+				return;
+			}
+
 			string value = null;
 			int eq = body.IndexOf('=');
 			int colon = body.IndexOf(':');
-			if (eq >= 0) { name = body.Substring(0, eq).Trim().ToLowerInvariant(); value = Unquote(body.Substring(eq + 1)); }
-			else if (colon >= 0) { name = body.Substring(0, colon).Trim().ToLowerInvariant(); value = Unquote(body.Substring(colon + 1)); }
-			else name = body.Trim().ToLowerInvariant();
-
-			if (closing) { PopStyle(name); return; }
+			if (eq >= 0) value = Unquote(body.Substring(eq + 1));
+			else if (colon >= 0) value = Unquote(body.Substring(colon + 1));
 
 			StyleState s = stack.Peek();
 			switch (name) {
@@ -134,12 +211,6 @@ namespace Sperlich.Text {
 				case "uppercase": case "allcaps": s.Case = TextCase.Upper; break;
 				case "lowercase": s.Case = TextCase.Lower; break;
 				case "smallcaps": s.Case = TextCase.SmallCaps; break;
-				case "wave": s.SpanEffect = BuiltinEffect.Wave; break;
-				case "shake": s.SpanEffect = BuiltinEffect.Shake; break;
-				case "pulse": s.SpanEffect = BuiltinEffect.Pulse; break;
-				case "rainbow": s.SpanEffect = BuiltinEffect.Rainbow; break;
-				case "glowpulse": s.SpanEffect = BuiltinEffect.Glow; break;
-				case "glitch": s.SpanEffect = BuiltinEffect.Glitch; break;
 				case "outline": ApplyOutline(ref s, value); break;
 				case "shadow": ApplyShadow(ref s, value); break;
 				case "glow": ApplyGlow(ref s, value, false); break;
@@ -150,14 +221,6 @@ namespace Sperlich.Text {
 					s.LinkId = id;
 					break;
 				}
-				case "sprite":
-					inserts.Add(new InlineInsert { CharIndex = sb.Length, IsActionGlyph = false, Name = value ?? string.Empty });
-					sb.Append('￼');
-					break;
-				case "glyph":
-					inserts.Add(new InlineInsert { CharIndex = sb.Length, IsActionGlyph = true, Name = value ?? string.Empty });
-					sb.Append('￼');
-					break;
 				default: return; // unknown tag: ignore, do not push
 			}
 
@@ -177,6 +240,215 @@ namespace Sperlich.Text {
 				}
 			}
 			stack.Pop();
+		}
+
+		/// <summary>Parses attributes for one of the 7 parameterized effect tags (see
+		/// <see cref="TryGetParameterizedEffect"/>) and, if any were recognised, resolves a full
+		/// <see cref="BuiltinEffectParams"/> starting from <see cref="BuiltinEffectParams.DefaultFor"/> for
+		/// <paramref name="effect"/> with just those attributes overridden -- stored on the span as
+		/// <see cref="StyleState.EffectParamsOverride"/>. A bare tag (no attributes, e.g. plain <c>&lt;wave&gt;</c>)
+		/// leaves <see cref="StyleState.HasEffectParamsOverride"/> false, falling back to the shared default
+		/// preset exactly as before per-tag attributes existed.</summary>
+		private static void ApplyEffectTag(ref StyleState s, string body, BuiltinEffect effect) {
+			s.SpanEffect = effect;
+			List<string> tokens = Tokenize(body);
+			if (tokens.Count <= 1) return; // just the tag name itself, e.g. "wave" -- no attributes
+
+			BuiltinEffectParams p = BuiltinEffectParams.DefaultFor(effect);
+			bool changed = false;
+
+			// two passes: "min"/"max" (Blink's alpha-only shortcut) always apply LAST regardless of where
+			// they sit in the tag, so `color="#f00" min="0.2"` and `min="0.2" color="#f00"` behave the same
+			// -- color/color2 set the full RGBA, min/max then override just the alpha component.
+			for (int t = 1; t < tokens.Count; t++) {
+				(string key, string val) = SplitAttribute(tokens[t]);
+				if (key == "min" || key == "max") continue;
+				if (ApplyEffectAttribute(ref p, effect, key, val)) changed = true;
+			}
+			for (int t = 1; t < tokens.Count; t++) {
+				(string key, string val) = SplitAttribute(tokens[t]);
+				if (key != "min" && key != "max") continue;
+				if (ApplyEffectAttribute(ref p, effect, key, val)) changed = true;
+			}
+
+			if (changed) { s.HasEffectParamsOverride = true; s.EffectParamsOverride = p; }
+		}
+
+		private static (string key, string val) SplitAttribute(string tok) {
+			int eq = tok.IndexOf('=');
+			if (eq >= 0) return (tok.Substring(0, eq).Trim().ToLowerInvariant(), Unquote(tok.Substring(eq + 1)));
+			return (tok.Trim().ToLowerInvariant(), null);
+		}
+
+		private static bool ApplyEffectAttribute(ref BuiltinEffectParams p, BuiltinEffect effect, string key, string val) {
+			switch (key) {
+				case "amp": case "amplitude":
+					if (TryFloat(val, out float amp)) { p.Amplitude = amp; return true; }
+					return false;
+				case "freq": case "frequency":
+					if (TryFloat(val, out float freq)) { p.Frequency = freq; return true; }
+					return false;
+				case "speed":
+					if (TryFloat(val, out float speed)) { p.Speed = speed; return true; }
+					return false;
+				case "amount":
+					if (TryFloat(val, out float amount)) { p.Amount = Mathf.Clamp01(amount); return true; }
+					return false;
+				case "angle":
+					if (TryFloat(val, out float angle)) { p.Angle = angle; return true; }
+					return false;
+				case "inverse":
+					if (TryBool(val, out bool inv)) { p.Inverse = inv; return true; }
+					return false;
+				case "once":
+					if (TryBool(val, out bool once)) { p.Once = once; return true; }
+					return false;
+				case "progress":
+					if (TryFloat(val, out float prog)) { p.Progress = Mathf.Clamp01(prog); return true; }
+					return false;
+				case "ease": case "easing":
+					if (!string.IsNullOrEmpty(val) && System.Enum.TryParse(val, true, out TextEasing ease)) { p.Easing = ease; return true; }
+					return false;
+				case "style":
+					return ApplyStyleAttribute(ref p, effect, val);
+				// Blink's "just alpha" shortcut: leaves ColorA/ColorB RGB at whatever they already are
+				// (default preset = neutral white) and only sets the alpha component.
+				case "min":
+					if (effect == BuiltinEffect.Blink && TryFloat(val, out float minA)) {
+						Color c = p.ColorA; c.a = Mathf.Clamp01(minA); p.ColorA = c; return true;
+					}
+					return false;
+				case "max":
+					if (effect == BuiltinEffect.Blink && TryFloat(val, out float maxA)) {
+						Color c = p.ColorB; c.a = Mathf.Clamp01(maxA); p.ColorB = c; return true;
+					}
+					return false;
+				case "color":
+					if (TryColor(val, out float4 colA)) { p.ColorA = new Color(colA.x, colA.y, colA.z, colA.w); return true; }
+					return false;
+				case "color2":
+					if (TryColor(val, out float4 colB)) { p.ColorB = new Color(colB.x, colB.y, colB.z, colB.w); return true; }
+					return false;
+				default:
+					return false;
+			}
+		}
+
+		private static bool ApplyStyleAttribute(ref BuiltinEffectParams p, BuiltinEffect effect, string val) {
+			if (string.IsNullOrEmpty(val)) return false;
+			switch (effect) {
+				case BuiltinEffect.Wave:
+					if (System.Enum.TryParse(val, true, out WaveStyle ws)) { p.WaveStyle = ws; return true; }
+					return false;
+				case BuiltinEffect.Pulse:
+					if (System.Enum.TryParse(val, true, out ScaleStyle ss)) { p.ScaleStyle = ss; return true; }
+					return false;
+				case BuiltinEffect.Glow:
+					if (System.Enum.TryParse(val, true, out GlowStyle gs)) { p.GlowStyle = gs; return true; }
+					return false;
+				case BuiltinEffect.Glitch:
+					if (System.Enum.TryParse(val, true, out GlitchStyle gts)) { p.GlitchStyle = gts; return true; }
+					return false;
+				default:
+					return false;
+			}
+		}
+
+		private static bool TryFloat(string v, out float f) =>
+			float.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out f);
+
+		private static bool TryBool(string v, out bool b) {
+			b = false;
+			if (string.IsNullOrEmpty(v)) return false;
+			switch (v.Trim().ToLowerInvariant()) {
+				case "true": case "1": case "yes": case "on": b = true; return true;
+				case "false": case "0": case "no": case "off": b = false; return true;
+				default: return false;
+			}
+		}
+
+		/// <summary>Parses <c>&lt;sprite="Name" size="1.1"&gt;</c> / <c>&lt;glyph:ActionName sizeabs="24"&gt;</c>.</summary>
+		private void ApplyInlineObjectTag(string body, bool isGlyph) {
+			List<string> tokens = Tokenize(body);
+			string objName = string.Empty;
+			float sizeMul = 1f;
+			float sizeAbs = 0f;
+			string deviceOverride = null;
+
+			for (int t = 0; t < tokens.Count; t++) {
+				string tok = tokens[t];
+				int eq = tok.IndexOf('=');
+				int colon = tok.IndexOf(':');
+				string key, val;
+				if (eq >= 0 && (colon < 0 || eq < colon)) { key = tok.Substring(0, eq).Trim().ToLowerInvariant(); val = Unquote(tok.Substring(eq + 1)); }
+				else if (colon >= 0) { key = tok.Substring(0, colon).Trim().ToLowerInvariant(); val = Unquote(tok.Substring(colon + 1)); }
+				else { key = tok.Trim().ToLowerInvariant(); val = null; }
+
+				if (t == 0) {
+					// first token is "sprite=Name" / "glyph:ActionName" itself -- val is the object name
+					objName = val ?? string.Empty;
+					continue;
+				}
+
+				switch (key) {
+					case "size":
+						if (float.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out float m)) sizeMul = Mathf.Max(0.01f, m);
+						break;
+					case "sizeabs":
+						if (float.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out float ab)) sizeAbs = Mathf.Max(0.01f, ab);
+						break;
+					// device= only makes sense on <glyph:...> (isGlyph); harmlessly ignored on <sprite=...>
+					case "device":
+						if (isGlyph && !string.IsNullOrEmpty(val)) deviceOverride = val;
+						break;
+				}
+			}
+
+			inserts.Add(new InlineInsert {
+				CharIndex = sb.Length,
+				IsActionGlyph = isGlyph,
+				Name = objName,
+				SizeMultiplier = sizeMul,
+				AbsoluteSizePx = sizeAbs,
+				DeviceOverride = deviceOverride
+			});
+			sb.Append('￼');
+		}
+
+		/// <summary>True for a valid <c>@ActionName@</c> action token: non-empty, no whitespace, no nested
+		/// <c>@</c> (both already guaranteed by the caller's <c>IndexOf</c>, checked again for clarity).</summary>
+		private static bool IsValidActionToken(string s) {
+			if (string.IsNullOrEmpty(s)) return false;
+			for (int k = 0; k < s.Length; k++) {
+				if (char.IsWhiteSpace(s[k]) || s[k] == '@') return false;
+			}
+			return true;
+		}
+
+		/// <summary>Splits on whitespace outside of single/double quotes, e.g. <c>sprite="Enter Key" size="1.1"</c>
+		/// -&gt; [<c>sprite="Enter Key"</c>, <c>size="1.1"</c>].</summary>
+		private static List<string> Tokenize(string s) {
+			var tokens = new List<string>();
+			int i = 0, n = s.Length;
+			while (i < n) {
+				while (i < n && char.IsWhiteSpace(s[i])) i++;
+				if (i >= n) break;
+				int start = i;
+				bool inQuote = false;
+				char quoteChar = '\0';
+				while (i < n) {
+					char c = s[i];
+					if (inQuote) {
+						if (c == quoteChar) inQuote = false;
+					} else {
+						if (c == '"' || c == '\'') { inQuote = true; quoteChar = c; }
+						else if (char.IsWhiteSpace(c)) break;
+					}
+					i++;
+				}
+				tokens.Add(s.Substring(start, i - start));
+			}
+			return tokens;
 		}
 
 		private static string Unquote(string v) {

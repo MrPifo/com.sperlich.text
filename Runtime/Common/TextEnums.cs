@@ -142,7 +142,8 @@ namespace Sperlich.Text {
 		Rotate,
 		Rainbow,
 		Glow,
-		Glitch
+		Glitch,
+		Blink
 	}
 
 	/// <summary>Sub-style for the Wave effect.</summary>

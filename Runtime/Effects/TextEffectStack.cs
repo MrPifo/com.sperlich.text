@@ -47,21 +47,37 @@ namespace Sperlich.Text {
 
 			ApplyRevealMask(verts, quadStart, quadSource);
 
-			// component-level effects (whole text)
-			for (int i = 0; i < builtins.Count; i++) {
-				if (builtins[i].Enabled && builtins[i].Effect != BuiltinEffect.None) {
-					RunEffect(builtins[i], -1, store, verts, quadStart, quadSource, quadEffect, time, totalSourceChars);
+			// component-level effects (whole text): a single config applies to every quad, so a trivial
+			// one-entry table + all-zero index array stands in for the per-span dedup table below.
+			if (builtins.Count > 0) {
+				NativeArray<int> uniformIndex = new NativeArray<int>(quadStart.Length, Allocator.TempJob, NativeArrayOptions.ClearMemory);
+				for (int i = 0; i < builtins.Count; i++) {
+					if (!builtins[i].Enabled || builtins[i].Effect == BuiltinEffect.None) continue;
+					NativeArray<BuiltinEffectParamsBurst> singleEntry = new NativeArray<BuiltinEffectParamsBurst>(1, Allocator.TempJob);
+					singleEntry[0] = builtins[i].ToBurst();
+					RunEffect(builtins[i], -1, store, verts, quadStart, quadSource, quadEffect, singleEntry, uniformIndex, time, totalSourceChars);
+					singleEntry.Dispose();
 				}
+				uniformIndex.Dispose();
 			}
 
-			// per-span effects from <wave> / <shake> / ... tags
+			// per-span effects from <wave> / <shake> / <blink> / ... tags -- tunables come from the builder's
+			// deduplicated per-span table, so two tags of the same type can carry different attribute values
+			// without needing an extra scheduled job per occurrence (job count still only depends on how many
+			// distinct BuiltinEffect *types* are present, exactly as before per-tag attributes existed).
 			if (builder.HasSpanEffects) {
+				NativeArray<int> quadParamIndex = builder.GlyphQuadParamIndex.AsArray();
+				IReadOnlyList<BuiltinEffectParamsBurst> table = builder.EffectParamsTable;
+				NativeArray<BuiltinEffectParamsBurst> paramsTable = new NativeArray<BuiltinEffectParamsBurst>(table.Count, Allocator.TempJob);
+				for (int i = 0; i < table.Count; i++) paramsTable[i] = table[i];
+
 				int mask = 0;
 				for (int q = 0; q < quadEffect.Length; q++) mask |= 1 << quadEffect[q];
-				for (int e = 1; e <= (int)BuiltinEffect.Glitch; e++) {
+				for (int e = 1; e <= (int)BuiltinEffect.Blink; e++) {
 					if ((mask & (1 << e)) == 0) continue;
-					RunEffect(DefaultParams((BuiltinEffect)e), e, store, verts, quadStart, quadSource, quadEffect, time, totalSourceChars);
+					RunEffect(DefaultParams((BuiltinEffect)e), e, store, verts, quadStart, quadSource, quadEffect, paramsTable, quadParamIndex, time, totalSourceChars);
 				}
+				paramsTable.Dispose();
 			}
 
 			if (scripts.Count > 0) {
@@ -75,9 +91,16 @@ namespace Sperlich.Text {
 
 		private const int RampSamples = 64;
 
+		/// <summary>Schedules one Burst job for every quad whose <see cref="BuiltinEffectJob.QuadEffect"/> matches
+		/// <paramref name="filter"/> (-1 = every quad). <paramref name="p"/> is only used for the resources that
+		/// stay shared per effect *type* rather than per tag occurrence -- the colour ramp, the Matrix scramble
+		/// pool, and the Shimmer beam-angle projection bounds (see the plan's scope note: per-tag Ramp/scramble
+		/// overrides are a possible later extension, not part of this pass). The actual per-quad tunables come
+		/// from <paramref name="paramsTable"/>/<paramref name="quadParamIndex"/>.</summary>
 		private static void RunEffect(BuiltinEffectParams p, int filter, GlyphStore store,
 			NativeArray<TextVertex> verts, NativeArray<int> quadStart, NativeArray<int> quadSource,
-			NativeArray<int> quadEffect, float time, int totalChars) {
+			NativeArray<int> quadEffect, NativeArray<BuiltinEffectParamsBurst> paramsTable, NativeArray<int> quadParamIndex,
+			float time, int totalChars) {
 
 			NativeArray<float4> ramp = new NativeArray<float4>(RampSamples, Allocator.TempJob);
 			BuildRamp(p, ramp);
@@ -125,23 +148,9 @@ namespace Sperlich.Text {
 				QuadEffect = quadEffect,
 				EffectFilter = filter,
 				Effect = p.Effect,
-				WaveStyle = p.WaveStyle,
-				RotateStyle = p.RotateStyle,
-				ScaleStyle = p.ScaleStyle,
-				Easing = p.Easing,
-				GlowStyle = p.GlowStyle,
-				GlitchStyle = p.GlitchStyle,
+				ParamsTable = paramsTable,
+				QuadParamIndex = quadParamIndex,
 				Time = time,
-				Amplitude = p.Amplitude,
-				Frequency = p.Frequency,
-				Speed = p.Speed,
-				Amount = p.Amount,
-				Angle = p.Angle,
-				Inverse = p.Inverse,
-				Once = p.Once,
-				Progress = p.Progress,
-				ColorA = new float4(p.ColorA.r, p.ColorA.g, p.ColorA.b, p.ColorA.a),
-				ColorB = new float4(p.ColorB.r, p.ColorB.g, p.ColorB.b, p.ColorB.a),
 				TotalChars = totalChars,
 				ProjectedMin = pMin,
 				ProjectedMax = pMax,
@@ -167,17 +176,7 @@ namespace Sperlich.Text {
 			}
 		}
 
-		private static BuiltinEffectParams DefaultParams(BuiltinEffect e) {
-			return e switch {
-				BuiltinEffect.Wave => BuiltinEffectParams.Wave,
-				BuiltinEffect.Shake => BuiltinEffectParams.Shake,
-				BuiltinEffect.Pulse => BuiltinEffectParams.Pulse,
-				BuiltinEffect.Rainbow => BuiltinEffectParams.Rainbow,
-				BuiltinEffect.Glow => BuiltinEffectParams.Glow,
-				BuiltinEffect.Glitch => BuiltinEffectParams.Glitch,
-				_ => default
-			};
-		}
+		private static BuiltinEffectParams DefaultParams(BuiltinEffect e) => BuiltinEffectParams.DefaultFor(e);
 
 		private void ApplyRevealMask(NativeArray<TextVertex> verts, NativeArray<int> quadStart, NativeArray<int> quadSource) {
 			if (RevealVisibleChars == int.MaxValue) return;

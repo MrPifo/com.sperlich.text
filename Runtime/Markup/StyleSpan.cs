@@ -26,6 +26,13 @@ namespace Sperlich.Text {
 
 		public BuiltinEffect SpanEffect; // animated effect applied to this run (None = off)
 
+		/// <summary>True when the effect tag carried its own attributes (e.g. <c>&lt;wave amp="1.5"&gt;</c>);
+		/// <see cref="EffectParamsOverride"/> is then a fully resolved parameter set for this run specifically.
+		/// False (the common case, bare tags like <c>&lt;wave&gt;</c>) falls back to the shared, component-wide
+		/// default preset for <see cref="SpanEffect"/> -- same behaviour as before per-tag attributes existed.</summary>
+		public bool HasEffectParamsOverride;
+		public BuiltinEffectParams EffectParamsOverride;
+
 		public bool HasOutline;
 		public float4 OutlineColor;
 		public float OutlineWidth;    // SDF units, ~0.05..0.4
@@ -70,6 +77,7 @@ namespace Sperlich.Text {
 				&& HasMark == o.HasMark
 				&& MarkColor.Equals(o.MarkColor)
 				&& SpanEffect == o.SpanEffect
+				&& HasEffectParamsOverride == o.HasEffectParamsOverride
 				&& HasOutline == o.HasOutline && OutlineColor.Equals(o.OutlineColor) && Mathf.Approximately(OutlineWidth, o.OutlineWidth)
 				&& HasGlow == o.HasGlow && GlowColor.Equals(o.GlowColor) && GlowBloom == o.GlowBloom
 					&& Mathf.Approximately(GlowRadius, o.GlowRadius) && Mathf.Approximately(GlowIntensity, o.GlowIntensity)
@@ -90,8 +98,11 @@ namespace Sperlich.Text {
 	/// <summary>Inline sprite / action-glyph insertion point in the stripped display text.</summary>
 	public struct InlineInsert {
 		public int CharIndex;        // position in the stripped text (occupies one placeholder char)
-		public bool IsActionGlyph;   // true: resolve via ITextGlyphSource; false: named sprite
+		public bool IsActionGlyph;   // true: resolve via GlyphActionRegistry (<glyph:...> / @Action@); false: named sprite
 		public string Name;          // sprite name or input action name
+		public float SizeMultiplier; // "size=" attribute; multiplier of the active fontSize, default 1
+		public float AbsoluteSizePx; // "sizeabs=" attribute; 0 = unset, overrides SizeMultiplier when > 0
+		public string DeviceOverride; // "device=" attribute on <glyph:...>; empty = resolve via GlyphDeviceContext.ActiveDeviceId
 	}
 
 	/// <summary>A clickable region declared by a &lt;link&gt; tag. Char range is in stripped text.</summary>

@@ -26,7 +26,7 @@ Namespace: `Sperlich.Text`. Assemblies: `Sperlich.Text` (runtime), `Sperlich.Tex
 | 8 Shader | SDF sampling, screen-space AA, outline, drop shadow, glow, gradient, gamma-correct | `Shaders/SperlichTextSDF.shader` |
 | 9 Effects | Ebene 1 `ITextEffect` (plain C#) + Ebene 2 Burst `IJobParallelFor` catalog | `Effects/*` |
 | 9.3 Reveal / typewriter | per-char callbacks, punctuation pauses, skip, pause-aware | `Effects/RevealController.cs` |
-| 10 Input glyphs | `ITextGlyphSource` abstraction + opt-in Rewired adapter | `Glyphs/*`, `Adapters/Rewired/*` |
+| 10 Input glyphs | data-driven device→action→icon registry, input-system-agnostic | `Glyphs/*` |
 | 11 Interaction layer | link hit-testing (bounds, no raycast), hover / click events | `Interaction/TextInteraction.cs` |
 | 12 Input / editing layer | caret + selection + keyboard + clipboard (single/multi-line, no IME) | `Editing/SperlichTextInputField.cs` |
 | 13 Editor tooling | custom inspector, tag-insert toolbar, readability linter, live preview | `Editor/SperlichTextEditor.cs` |
@@ -72,7 +72,7 @@ If TMP is somehow absent, `Sperlich.Text` will not compile — add `com.unity.ug
 
 1. Create a **Font Definition**: `Assets > Create > Sperlich > Text > Font Definition`. Assign a primary
    `Font` (imported `.ttf`/`.otf`) and optional fallback fonts.
-2. Optional: `Assets > Create > Sperlich > Text > Settings`, name it `SperlichTextSettings`, put it under a
+2. Optional: `Assets > Create > Sperlich > Text > Settings`, name it `STextSettings`, put it under a
    `Resources/` folder, assign the default font and (recommended) the `Sperlich/Text SDF` shader asset so
    it is not stripped from player builds. Otherwise add that shader to **Project Settings > Graphics >
    Always Included Shaders**.
@@ -80,8 +80,13 @@ If TMP is somehow absent, `Sperlich.Text` will not compile — add `com.unity.ug
    Assign the Font Definition, type text, done. It previews live without Play mode.
 4. For links: add **Text Interaction**. For an input field: add **Sperlich Text Input Field**.
    Link hover needs an input module that dispatches pointer-move events.
-5. Rewired glyphs: add `SPERLICH_TEXT_REWIRED` to Scripting Define Symbols, then put `RewiredGlyphSource`
-   on a GameObject and register it as the active `ITextGlyphSource` (wire-up hook is game-side).
+5. Device glyphs: `Assets > Create > Sperlich > Text > Glyph Action Registry` (one project singleton, put it
+   under a `Resources/` folder) — one asset for everything: each action gets a fallback label plus a
+   per-device icon list, picked from a searchable dropdown (with preview) over the `SpriteGlyphAsset`
+   assigned in the registry's "Sprite Asset" field. Your own input code calls
+   `GlyphDeviceContext.SetActiveDevice("Xbox")` when the active device changes — the package never detects a
+   device itself. Use `@Jump@` (auto-resolves via the active device) or `<glyph:Jump device="Xbox">` (forces
+   a specific device) in markup.
 
 ## Tests
 
@@ -92,6 +97,6 @@ EditMode NUnit tests (pure logic, no FontEngine): `LineBreaker`, `MarkupParser`,
 
 1. Build a scratch scene, confirm a glyph renders end-to-end, tune the shader defaults (SDF spread ↔ `sdfPadding`).
 2. Wire real kerning — now easy via `fontAsset.fontFeatureTable.glyphPairAdjustmentRecords`.
-3. `<sprite>` / `<glyph>` inline objects currently reserve a blank box — hook a sprite atlas + `ITextGlyphSource` UV resolve.
+3. `<sprite="name">` renders via `SpriteGlyphAsset` (done). `<glyph:ActionName>` / `@ActionName@` resolve via `GlyphActionRegistry`/`GlyphDeviceProfile`/`GlyphDeviceContext` (done) — icon found → same flat-sprite path as `<sprite>`; none found → the action's fallback text label is expanded into real shaped glyphs instead of a blank box.
 4. Move built-in effect jobs to a single combined pass (currently one `Schedule().Complete()` per effect).
 5. Multi-atlas support (currently `enableMultiAtlasSupport:false` + full rebuild on overflow).

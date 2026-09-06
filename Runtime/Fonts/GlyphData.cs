@@ -38,6 +38,15 @@ namespace Sperlich.Text {
 		/// <summary>True when this glyph carries no visible ink (space, control char).</summary>
 		public bool IsWhitespace;
 
+		/// <summary>True for an inline <c>&lt;sprite="name"&gt;</c> glyph: <see cref="AtlasRect"/> is unused,
+		/// UVs come from <see cref="SpriteUVRect"/> against a separate sprite atlas texture instead of the
+		/// font atlas (see <see cref="Mesh.TextMeshBuilder"/>'s flat-sprite quad branch).</summary>
+		public bool IsSprite;
+
+		/// <summary>UV rect (u0, v0, u1, v1) inside the resolved <c>SpriteGlyphAsset</c> atlas texture.
+		/// Only valid when <see cref="IsSprite"/> is true.</summary>
+		public float4 SpriteUVRect;
+
 		public static GlyphData Whitespace(uint unicode, float advance) => new GlyphData {
 			Unicode = unicode,
 			Advance = advance,

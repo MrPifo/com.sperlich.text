@@ -365,10 +365,51 @@ unbreakable `aaa…` word, whitespace runs.
 - MTSDF has no runtime glyph generation — CJK / emoji / unknown user text need the SDF `fieldKind`.
 - Kerning returns 0 for TMP SDF (plumbed; wire via `fontFeatureTable`). MTSDF kerning plumbed but
   `MsdfBaker` writes an empty kerning table.
-- `<glyph:…>` / `<sprite=…>` reserve a blank box (no `ITextGlyphSource` / sprite atlas wired).
+- `<sprite="name">` renders a real, full-colour, per-instance-sized icon (SpriteGlyphAsset atlas, flat
+  fxMode 4 quad in the same draw call — see `SpriteGlyphAsset`, `TextLayoutEngine.ResolveInlineObject`,
+  `TextMeshBuilder.EmitSpriteQuad`).
+- `<glyph:ActionName>` / `@ActionName@` (shorthand, no attributes) resolve device-specific icons through a
+  data-driven registry, NOT `ITextGlyphSource`/Rewired (removed — was an unwired stub). New types:
+  `GlyphDeviceContext` (static, `SetActiveDevice(string)` + `DeviceChanged` event — the project sets this
+  from its own Rewired/Input System/whatever code, the package never detects a device itself) and
+  `GlyphActionRegistry` (project singleton, same `Resources`-folder "exactly one" rule as `STextSettings`) --
+  **one single asset**: `Actions` (Name+DefaultFallbackLabel) and `Devices` (Title+DeviceId) are each defined
+  exactly once; `Icons` is a flat `(DeviceId, Action) -> SpriteName` lookup table maintained entirely by the
+  custom editor (`Editor/GlyphActionRegistryEditor.cs`), which presents it as a **per-device grid**: pick a
+  device tab, every action already appears as one row, just fill in the icon — no re-typing an action or
+  device name anywhere (two earlier designs were reworked after review: first a two-asset split duplicated
+  action names between assets, then an action-grouped single asset still made devices free-typed strings per
+  row; this device-tab grid is the one that actually avoids re-typing anything). Icon picking uses a
+  searchable `AdvancedDropdown` with a cropped-thumbnail preview over `ReferenceSpriteAsset`'s entries;
+  selection is matched by the dropdown item's own `.name` (the sprite entry's name), not a hand-assigned
+  `.id` — `AdvancedDropdown` reserves/reassigns ids internally, so indexing back into a list by a manually
+  set id threw `ArgumentOutOfRangeException` in practice. Thumbnails need the packed atlas's
+  `TextureImporter.isReadable = true`, set automatically by `SpriteGlyphAssetEditor.RebuildAtlas`.
+  `<glyph:ActionName device="Xbox">` forces a specific device instead of the active one.
+  Resolution in `TextLayoutEngine.ResolveInlineObject`: icon found → same flat-sprite path as `<sprite>`; no
+  icon for that device → the registry's per-action fallback text label gets expanded into REAL shaped
+  glyphs at that position (`TextLayoutEngine.AppendFallbackLabelGlyphs`, all sharing one `WorkGlyph.Source`
+  — the label is one atomic, non-breakable run for wrap/caret/reveal purposes). `SText.EnsureMarkup`
+  (un)subscribes to `GlyphDeviceContext.DeviceChanged` only when `markup.Inserts` has an action-glyph, and
+  the handler just sets `layoutDirty` (no re-parse needed, `ResolveInlineObject` re-runs against the new device).
 - `<link>` needs the `TextInteraction` component + pointer-move events.
 - Typewriter reveal is play-mode only. Multi-line run-gradient restarts per line.
-- `<wave=amp,freq,speed>` custom params not parsed (presets only).
+- `<wave amp="1.5" speed="3" once="true" ...>` and the other 6 animated effect tags (`shake`/`pulse`/
+  `rainbow`/`glowpulse`/`glitch`/`blink`) now DO parse per-tag attributes (`amp`/`freq`/`speed`/`amount`/
+  `angle`/`inverse`/`once`/`progress`/`ease`/`style`/`color`/`color2`, plus `min`/`max` alpha-only shortcuts
+  on `<blink>`) — see `MarkupParser.ApplyEffectTag`/`ApplyEffectAttribute`. Two tags of the same type can
+  carry different values in the same label without extra Burst job scheduling: `TextMeshBuilder` dedupes
+  resolved `BuiltinEffectParamsBurst` into a per-build table (`EffectParamsTable`/`glyphQuadParamIndex`) that
+  `BuiltinEffectJob` looks up per quad — job count still only depends on how many distinct `BuiltinEffect`
+  *types* are present, not how many tag occurrences. Bare tags (no attributes) keep sharing the old
+  component-wide `BuiltinEffectParams.DefaultFor(effect)` preset, unchanged. Per-tag `Ramp`/`ScrambleCharacters`
+  overrides are NOT supported (Rainbow/Glitch-Matrix color ramps stay a single shared resource per effect type
+  — a possible later extension, see `TextEffectStack.RunEffect`'s doc comment).
+- `Blink` (`BuiltinEffect.Blink`): alpha/colour pulse via `lerp(ColorA, ColorB, easedT)` + `MulColor` — Loop
+  mode oscillates `0.5+0.5*sin(Time*Speed)` through the easing curve; Once mode is driven directly by
+  `Progress` (0..1, same manual-set convention every other Once effect already uses). `SText.PlayBuiltinEffectOnce(index, duration)`
+  is a small opt-in helper (works for any Once-capable effect) that auto-ticks `Progress` off
+  `SperlichTextClock.Time` instead of the caller setting it every frame — see `SText.LateUpdate`/`TickOnceEffects`.
 
 ## Rules for this package
 

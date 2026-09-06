@@ -35,6 +35,7 @@ namespace Sperlich.Text {
 		private NativeList<int> glyphQuadStart;   // first vertex of each glyph quad (effect target)
 		private NativeList<int> glyphQuadSource;  // stripped-text index of each glyph quad
 		private NativeList<int> glyphQuadEffect;  // per-quad BuiltinEffect from the style span (0 = none)
+		private NativeList<int> glyphQuadParamIndex; // per-quad index into effectParamsTable (resolved tunables for that quad's SpanEffect)
 		private float2 origin;
 		private float4 tint = new float4(1f, 1f, 1f, 1f);
 		private bool allocated;
@@ -43,10 +44,24 @@ namespace Sperlich.Text {
 		// (spanIndex, lineIndex) -> (xMin, yMin, xMax, yMax) covering a whole gradient run on one line
 		private readonly Dictionary<long, float4> gradientBounds = new();
 
+		// Deduplicated per-build table of resolved BuiltinEffectParamsBurst (index 0 is always the harmless
+		// "no override" default so BuiltinEffect.None quads can point at it safely). Built once per Build()
+		// call from each span's <see cref="StyleState.EffectParamsOverride"/> (or the shared default preset
+		// when a tag carries no attributes) -- lets two <wave>/<blink>/... tags in the same label run with
+		// different Amplitude/Speed/etc. without scheduling an extra Burst job per tag occurrence: job count
+		// (see TextEffectStack) still only depends on how many distinct BuiltinEffect *types* are present.
+		private readonly List<BuiltinEffectParamsBurst> effectParamsTable = new();
+		private readonly Dictionary<BuiltinEffectParamsBurst, int> effectParamsLookup = new();
+		// per-spanIndex cache so consecutive glyphs of the same span skip the dictionary lookup
+		private int lastParamSpanIndex = -1;
+		private int lastParamIndex;
+
 		public NativeList<TextVertex> Vertices => vertices;
 		public NativeList<int> GlyphQuadStart => glyphQuadStart;
 		public NativeList<int> GlyphQuadSource => glyphQuadSource;
 		public NativeList<int> GlyphQuadEffect => glyphQuadEffect;
+		public NativeList<int> GlyphQuadParamIndex => glyphQuadParamIndex;
+		public IReadOnlyList<BuiltinEffectParamsBurst> EffectParamsTable => effectParamsTable;
 		public bool HasSpanEffects => hasSpanEffects;
 		public int GlyphQuadCount => allocated ? glyphQuadStart.Length : 0;
 		public int VertexCount => allocated ? vertices.Length : 0;
@@ -58,6 +73,7 @@ namespace Sperlich.Text {
 			glyphQuadStart = new NativeList<int>(128, Allocator.Persistent);
 			glyphQuadSource = new NativeList<int>(128, Allocator.Persistent);
 			glyphQuadEffect = new NativeList<int>(128, Allocator.Persistent);
+			glyphQuadParamIndex = new NativeList<int>(128, Allocator.Persistent);
 			allocated = true;
 		}
 
@@ -68,6 +84,7 @@ namespace Sperlich.Text {
 			if (glyphQuadStart.IsCreated) glyphQuadStart.Dispose();
 			if (glyphQuadSource.IsCreated) glyphQuadSource.Dispose();
 			if (glyphQuadEffect.IsCreated) glyphQuadEffect.Dispose();
+			if (glyphQuadParamIndex.IsCreated) glyphQuadParamIndex.Dispose();
 			allocated = false;
 		}
 
@@ -83,7 +100,12 @@ namespace Sperlich.Text {
 			glyphQuadStart.Clear();
 			glyphQuadSource.Clear();
 			glyphQuadEffect.Clear();
+			glyphQuadParamIndex.Clear();
 			hasSpanEffects = false;
+			effectParamsTable.Clear();
+			effectParamsLookup.Clear();
+			effectParamsTable.Add(default); // slot 0: harmless default, used by every BuiltinEffect.None quad
+			lastParamSpanIndex = -1;
 			if (layout == null || store == null || layout.Glyphs.Count == 0) return;
 
 			float atlasSize = math.max(1, store.AtlasSize);
@@ -117,6 +139,12 @@ namespace Sperlich.Text {
 				if (!g.Visible) continue;
 				GlyphData gd = g.Glyph;
 				if (gd.IsWhitespace) continue;
+
+				if (gd.IsSprite) {
+					EmitSpriteQuad(g, gd, spans);
+					continue;
+				}
+
 				if (gd.AtlasRect.z <= 0f || gd.AtlasRect.w <= 0f) {
 					// No atlas rect and not resolved -> the font chain has no glyph and even the tofu
 					// replacement char is absent. Draw a hollow "notdef" box so the gap stays visible.
@@ -200,6 +228,7 @@ namespace Sperlich.Text {
 				glyphQuadStart.Add(vertices.Length);
 				glyphQuadSource.Add(g.SourceIndex);
 				glyphQuadEffect.Add((int)style.SpanEffect);
+				glyphQuadParamIndex.Add(ResolveEffectParamIndex(spans, g.SpanIndex));
 				if (style.SpanEffect != BuiltinEffect.None) hasSpanEffects = true;
 
 				AddQuad(
@@ -212,6 +241,42 @@ namespace Sperlich.Text {
 			}
 
 			EmitLineDecorations(layout, spans, fm, samplePx);
+		}
+
+		/// <summary>Emits one flat (non-SDF) quad for an inline <c>&lt;sprite="name"&gt;</c> glyph — fxMode 4
+		/// in the shader, sampling <c>_SpriteTex</c> directly instead of the font atlas. <see cref="GlyphData.Size"/>/
+		/// <see cref="GlyphData.Bearing"/> are sampling-point-size units like every other glyph, so they go
+		/// through the same <c>* g.UnitScale</c> as a normal glyph quad. Tint is the same <c>&lt;color&gt;</c>
+		/// span colour a normal glyph gets (multiplied over the icon's own RGBA), so a coloured run tints its
+		/// icon the same way it tints its text; its quad is still tracked in <see cref="glyphQuadStart"/>/
+		/// <see cref="glyphQuadSource"/>/<see cref="glyphQuadEffect"/> so a span-level builtin effect
+		/// (wave/shake/pulse/...) still moves it in lockstep with the surrounding text.</summary>
+		private void EmitSpriteQuad(in PositionedGlyph g, in GlyphData gd, IReadOnlyList<StyleSpan> spans) {
+			float unit = g.UnitScale;
+			float left = g.Pen.x + gd.Bearing.x * unit;
+			float top = g.Pen.y + gd.Bearing.y * unit;
+			float w = gd.Size.x * unit;
+			float h = gd.Size.y * unit;
+
+			StyleState style = SpanStyle(spans, g.SpanIndex);
+			float4 uvRect = gd.SpriteUVRect; // (u0, v0, u1, v1)
+			float4 c = g.Color * tint;
+			float4 mode = new float4(4f, 0f, 0f, 0f);
+			float2 pivot = new float2(left + w * 0.5f, top - h * 0.5f);
+
+			glyphQuadStart.Add(vertices.Length);
+			glyphQuadSource.Add(g.SourceIndex);
+			glyphQuadEffect.Add((int)style.SpanEffect);
+			glyphQuadParamIndex.Add(ResolveEffectParamIndex(spans, g.SpanIndex));
+			if (style.SpanEffect != BuiltinEffect.None) hasSpanEffects = true;
+
+			AddQuad(
+				Corner(new float2(left, top), pivot, g.Rotation, 0f, h, top),
+				Corner(new float2(left + w, top), pivot, g.Rotation, 0f, h, top),
+				Corner(new float2(left + w, top - h), pivot, g.Rotation, 0f, h, top),
+				Corner(new float2(left, top - h), pivot, g.Rotation, 0f, h, top),
+				new float2(uvRect.x, uvRect.w), new float2(uvRect.z, uvRect.w), new float2(uvRect.z, uvRect.y), new float2(uvRect.x, uvRect.y),
+				c, c, c, c, 0f, 0f, mode);
 		}
 
 		private void EmitComponentShadow(LayoutResult layout, GlyphStore store, IReadOnlyList<StyleSpan> spans, float atlasSize, float samplePx, float distanceRange, in ComponentShadow s, float extraPadding) {
@@ -315,6 +380,7 @@ namespace Sperlich.Text {
 				glyphQuadStart.Add(vertices.Length);
 				glyphQuadSource.Add(g.SourceIndex);
 				glyphQuadEffect.Add(0); // BuiltinEffect.None
+				glyphQuadParamIndex.Add(0); // slot 0 = harmless default, unused since effect is None
 
 				AddQuad(
 					Corner(new float2(left, top), pivot, rot, shear, h, top),
@@ -543,6 +609,32 @@ namespace Sperlich.Text {
 			if (spans == null || spans.Count == 0) return StyleState.Default;
 			if (spanIndex >= 0 && spanIndex < spans.Count) return spans[spanIndex].Style;
 			return spans[spans.Count - 1].Style;
+		}
+
+		/// <summary>Resolves (and dedup-caches into <see cref="effectParamsTable"/>) the index a quad from
+		/// <paramref name="spanIndex"/> should carry in <see cref="glyphQuadParamIndex"/>. A tag with its own
+		/// attributes (<see cref="StyleState.HasEffectParamsOverride"/>) gets its own table entry; a bare tag
+		/// falls back to the shared default preset for that effect type, same as every other span sharing that
+		/// same (lack of) override -- so plain text (the common case) only ever touches slot 0.</summary>
+		private int ResolveEffectParamIndex(IReadOnlyList<StyleSpan> spans, int spanIndex) {
+			StyleState style = SpanStyle(spans, spanIndex);
+			if (style.SpanEffect == BuiltinEffect.None) return 0;
+			if (spanIndex == lastParamSpanIndex) return lastParamIndex;
+
+			BuiltinEffectParams src = style.HasEffectParamsOverride
+				? style.EffectParamsOverride
+				: BuiltinEffectParams.DefaultFor(style.SpanEffect);
+			BuiltinEffectParamsBurst burst = src.ToBurst();
+
+			if (!effectParamsLookup.TryGetValue(burst, out int idx)) {
+				idx = effectParamsTable.Count;
+				effectParamsTable.Add(burst);
+				effectParamsLookup[burst] = idx;
+			}
+
+			lastParamSpanIndex = spanIndex;
+			lastParamIndex = idx;
+			return idx;
 		}
 
 		private void AddQuad(float3 p0, float3 p1, float3 p2, float3 p3,

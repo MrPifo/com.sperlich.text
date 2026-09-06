@@ -24,6 +24,9 @@ namespace Sperlich.Text {
 
 		[SerializeField, TextArea(2, 6)] private string m_text = "New Text";
 		[SerializeField] private FontDefinition m_font;
+		[Tooltip("Icon atlas resolved for <sprite=\"name\"> tags. Leave empty to fall back to the single " +
+			"project-wide default (SpriteGlyphAsset.GetDefault(), a Resources-folder lookup).")]
+		[SerializeField] private SpriteGlyphAsset m_spriteGlyphAsset;
 		[SerializeField] private float m_fontSize = 32f;
 		[SerializeField] private bool m_richText = true;
 		[SerializeField] private TextFontStyle m_fontStyle = TextFontStyle.None;
@@ -94,6 +97,8 @@ namespace Sperlich.Text {
 		private TextMeshBuilder meshBuilder;
 		private readonly TextEffectStack effects = new();
 		private Material runtimeMaterial;
+		private SharedMaterialRegistry.Key materialKey;
+		private bool hasMaterialKey;
 
 		private MarkupResult markup;
 		private LayoutResult layout;
@@ -125,6 +130,17 @@ namespace Sperlich.Text {
 			get => m_font;
 			set { if (m_font != value) { m_font = value; RebindFont(); textDirty = layoutDirty = true; SetVerticesDirty(); SetMaterialDirty(); } }
 		}
+
+		/// <summary>Icon atlas resolved for <c>&lt;sprite="name"&gt;</c> tags; null falls back to <see cref="SpriteGlyphAsset.GetDefault"/>.</summary>
+		public SpriteGlyphAsset SpriteAsset {
+			get => m_spriteGlyphAsset;
+			set { if (m_spriteGlyphAsset != value) { m_spriteGlyphAsset = value; layoutDirty = true; SetVerticesDirty(); SetMaterialDirty(); } }
+		}
+
+		/// <summary>Per-component override, else <see cref="STextSettings.defaultSpriteAsset"/> if pinned there,
+		/// else the project's auto-discovered Role = Main <see cref="SpriteGlyphAsset"/>.</summary>
+		private SpriteGlyphAsset ResolvedSpriteAsset => m_spriteGlyphAsset != null ? m_spriteGlyphAsset
+			: (STextSettings.GetOrDefault()?.ResolveSpriteAsset() ?? SpriteGlyphAsset.GetDefault());
 
 		public float FontSize {
 			get => m_fontSize;
@@ -334,15 +350,8 @@ namespace Sperlich.Text {
 
 		/// <summary>Fügt einen Built-in-Effekt mit Standardwerten hinzu.</summary>
 		public void AddBuiltinEffect(BuiltinEffect effect) {
-			BuiltinEffectParams p = effect switch {
-				BuiltinEffect.Wave => BuiltinEffectParams.Wave,
-				BuiltinEffect.Shake => BuiltinEffectParams.Shake,
-				BuiltinEffect.Pulse => BuiltinEffectParams.Pulse,
-				BuiltinEffect.Rainbow => BuiltinEffectParams.Rainbow,
-				BuiltinEffect.Glow => BuiltinEffectParams.Glow,
-				BuiltinEffect.Glitch => BuiltinEffectParams.Glitch,
-				_ => new BuiltinEffectParams { Enabled = true, Effect = effect }
-			};
+			BuiltinEffectParams p = BuiltinEffectParams.DefaultFor(effect);
+			if (p.Effect == BuiltinEffect.None) p = new BuiltinEffectParams { Enabled = true, Effect = effect };
 			AddBuiltinEffect(p);
 		}
 
@@ -562,6 +571,7 @@ namespace Sperlich.Text {
 
 		protected override void OnDisable() {
 			base.OnDisable();
+			if (subscribedToDeviceChanges) { GlyphDeviceContext.DeviceChanged -= OnGlyphDeviceChanged; subscribedToDeviceChanges = false; }
 			ReleaseFont();
 		}
 
@@ -569,18 +579,13 @@ namespace Sperlich.Text {
 			base.OnDestroy();
 			meshBuilder?.Dispose();
 			meshBuilder = null;
-			if (runtimeMaterial != null) { DestroySafe(runtimeMaterial); runtimeMaterial = null; }
+			if (hasMaterialKey) { SharedMaterialRegistry.Release(materialKey); hasMaterialKey = false; }
+			runtimeMaterial = null;
 		}
 
 		protected override void OnRectTransformDimensionsChange() {
 			base.OnRectTransformDimensionsChange();
 			layoutDirty = true;
-		}
-
-		private static void DestroySafe(UnityEngine.Object o) {
-			if (o == null) return;
-			if (Application.isPlaying) Destroy(o);
-			else DestroyImmediate(o);
 		}
 
 #if UNITY_EDITOR
@@ -614,7 +619,7 @@ namespace Sperlich.Text {
 		private void LateUpdate() {
 			if (store == null) return;
 
-			int budget = SperlichTextSettings.GetOrDefault()?.glyphsPerFrame ?? 8;
+			int budget = STextSettings.GetOrDefault()?.glyphsPerFrame ?? 8;
 			bool generated = store.ProcessQueue(budget);
 			if (generated || store.Version != lastStoreVersion) {
 				layoutDirty = true;
@@ -628,9 +633,54 @@ namespace Sperlich.Text {
 				SetVerticesDirty();
 			}
 
+			if (Application.isPlaying) TickOnceEffects();
+
 			if (Application.isPlaying && (effects.HasWork || (meshBuilder != null && meshBuilder.HasSpanEffects))) {
 				SetVerticesDirty();
 			}
+		}
+
+		private readonly Dictionary<int, float> onceStartTimes = new();
+		private readonly Dictionary<int, float> onceDurations = new();
+		private List<int> onceFinishedScratch;
+
+		/// <summary>Auto-advances a Once-mode built-in effect's <c>Progress</c> from 0 to 1 over
+		/// <paramref name="durationSeconds"/>, driven by <see cref="SperlichTextClock"/> (pause-aware) --
+		/// works for any Once-capable built-in effect, not just Blink. Covers "steuerbar, kann auch selbst
+		/// animiert werden" without the caller having to set <c>Progress</c> manually every frame; also the
+		/// natural way to abuse a Blink effect as a plain fade-in/fade-out (min=0% -&gt; call this once).</summary>
+		public bool PlayBuiltinEffectOnce(int index, float durationSeconds) {
+			if (index < 0 || index >= m_builtinEffects.Count) return false;
+			BuiltinEffectParams p = m_builtinEffects[index];
+			p.Once = true;
+			p.Progress = 0f;
+			m_builtinEffects[index] = p;
+			onceStartTimes[index] = SperlichTextClock.Time;
+			onceDurations[index] = Mathf.Max(0.0001f, durationSeconds);
+			SyncBuiltinEffects();
+			SetVerticesDirty();
+			return true;
+		}
+
+		private void TickOnceEffects() {
+			if (onceStartTimes.Count == 0) return;
+			bool changed = false;
+			foreach (KeyValuePair<int, float> kv in onceStartTimes) {
+				int index = kv.Key;
+				if (index >= m_builtinEffects.Count) continue;
+				float t = Mathf.Clamp01((SperlichTextClock.Time - kv.Value) / onceDurations[index]);
+				BuiltinEffectParams p = m_builtinEffects[index];
+				if (!Mathf.Approximately(p.Progress, t)) { p.Progress = t; m_builtinEffects[index] = p; changed = true; }
+				if (t >= 1f) (onceFinishedScratch ??= new List<int>()).Add(index);
+			}
+			if (onceFinishedScratch != null && onceFinishedScratch.Count > 0) {
+				for (int i = 0; i < onceFinishedScratch.Count; i++) {
+					onceStartTimes.Remove(onceFinishedScratch[i]);
+					onceDurations.Remove(onceFinishedScratch[i]);
+				}
+				onceFinishedScratch.Clear();
+			}
+			if (changed) { SyncBuiltinEffects(); SetVerticesDirty(); }
 		}
 
 		private void RestartReveal() {
@@ -676,7 +726,7 @@ namespace Sperlich.Text {
 				$"  layout glyphs   : {(layout != null ? layout.Glyphs.Count : 0)}, unresolved={(layout != null && layout.HasUnresolvedGlyphs)}\n" +
 				$"  layout size     : {(layout != null ? layout.Size.ToString() : "-")}\n" +
 				$"  mesh verts/idx  : {(meshBuilder != null ? $"{meshBuilder.VertexCount}/{meshBuilder.IndexCount}" : "-")}\n" +
-				$"  runtime shader  : {(SperlichTextSettings.GetOrDefault()?.ResolveShader() ?? Shader.Find("Sperlich/Text SDF"))?.name ?? "NOT FOUND"}\n" +
+				$"  runtime shader  : {(STextSettings.GetOrDefault()?.ResolveShader() ?? Shader.Find("Sperlich/Text SDF"))?.name ?? "NOT FOUND"}\n" +
 				$"  runtime material: {(runtimeMaterial != null ? runtimeMaterial.shader.name : "<null> (using fallback UI material)")}\n" +
 				$"  canvasRenderer  : cull={canvasRenderer.cull} materialCount={canvasRenderer.materialCount}\n" +
 				$"  after forced Build: verts/idx = {(meshBuilder != null ? $"{meshBuilder.VertexCount}/{meshBuilder.IndexCount}" : "-")}" +
@@ -747,39 +797,56 @@ namespace Sperlich.Text {
 		// -- internals -------------------------------------------------------------------------
 
 		private void EnsureRuntimeMaterial() {
-			if (runtimeMaterial == null) {
-				Shader shader = SperlichTextSettings.GetOrDefault()?.ResolveShader() ?? Shader.Find("Sperlich/Text SDF");
-				if (shader == null) return;
-				runtimeMaterial = new Material(shader) { name = "SperlichText (runtime)", hideFlags = HideFlags.DontSave };
-			}
 			PushMaterialProps();
 		}
 
+		/// <summary>
+		/// Re-resolves this component's <see cref="SharedMaterialRegistry.Key"/> and swaps to whatever
+		/// material the registry hands back for it. Two <see cref="SText"/> with the exact same style config
+		/// (same shader, MTSDF state, sprite atlas, dilate/sharpness/outline/shadow/glow/bloom) end up on the
+		/// literal same <see cref="Material"/> instance and therefore batch into one uGUI draw call — same
+		/// model TextMeshPro uses. A component whose config differs from every other just gets its own
+		/// material, same as before; never mutate <see cref="runtimeMaterial"/>'s properties in place here,
+		/// since it may be shared with other components right now.
+		/// </summary>
 		private void PushMaterialProps() {
-			if (runtimeMaterial == null) return;
-			runtimeMaterial.SetFloat("_FaceDilate", m_faceDilate);
-			runtimeMaterial.SetFloat("_Sharpness", m_sharpness);
-			runtimeMaterial.SetColor("_OutlineColor", m_outlineColor);
-			runtimeMaterial.SetFloat("_OutlineWidth", m_outline ? m_outlineWidth : 0f);
-			runtimeMaterial.SetFloat("_OutlineMode", (float)(int)m_outlineMode);
-			runtimeMaterial.SetColor("_UnderlayColor", m_shadow ? m_shadowColor : Color.clear);
-			runtimeMaterial.SetVector("_UnderlayOffset",
-				new Vector4(m_shadowOffset.x, m_shadowOffset.y, Mathf.Max(0.0001f, m_shadowSoftness), 0f));
-			runtimeMaterial.SetFloat("_UnderlayDilate", m_shadowDilate);
-			runtimeMaterial.SetFloat("_ShadowTaps", (float)m_shadowQuality);
-			runtimeMaterial.SetColor("_GlowColor", m_glowColor);
-			runtimeMaterial.SetFloat("_GlowPower", m_glow ? m_glowPower : 0f);
-			runtimeMaterial.SetFloat("_GlowOuter", m_glowOuter);
-			runtimeMaterial.SetFloat("_GlowTaps", (float)m_glowQuality);
-			runtimeMaterial.SetFloat("_BloomFalloff", m_bloomFallOff);
-			runtimeMaterial.SetFloat("_BloomTaps", (float)m_bloomSamples);
+			Shader shader = STextSettings.GetOrDefault()?.ResolveShader() ?? Shader.Find("Sperlich/Text SDF");
+			if (shader == null) return;
 
+			SpriteGlyphAsset spriteAsset = ResolvedSpriteAsset;
 			// MTSDF sampling is a shader keyword: only when the bound font asks for it AND the store's
 			// backend actually serves an MTSDF atlas (a fell-back FontAccess still reports SDF).
 			bool mtsdf = boundFont != null && boundFont.fieldKind == GlyphFieldKind.MTSDF
 				&& store != null && store.Fonts.FieldKind == GlyphFieldKind.MTSDF;
-			if (mtsdf) runtimeMaterial.EnableKeyword("SPERLICH_MTSDF");
-			else runtimeMaterial.DisableKeyword("SPERLICH_MTSDF");
+
+			var key = new SharedMaterialRegistry.Key {
+				Shader = shader,
+				Mtsdf = mtsdf,
+				SpriteAtlas = spriteAsset != null ? spriteAsset.Atlas : null,
+				FaceDilate = m_faceDilate,
+				Sharpness = m_sharpness,
+				OutlineColor = m_outlineColor,
+				OutlineWidth = m_outline ? m_outlineWidth : 0f,
+				OutlineMode = (int)m_outlineMode,
+				ShadowColor = m_shadow ? m_shadowColor : Color.clear,
+				ShadowOffset = m_shadowOffset,
+				ShadowSoftness = m_shadowSoftness,
+				ShadowDilate = m_shadowDilate,
+				ShadowTaps = (int)m_shadowQuality,
+				GlowColor = m_glowColor,
+				GlowPower = m_glow ? m_glowPower : 0f,
+				GlowOuter = m_glowOuter,
+				GlowTaps = (int)m_glowQuality,
+				BloomFalloff = m_bloomFallOff,
+				BloomTaps = m_bloomSamples
+			};
+
+			if (hasMaterialKey && key.Equals(materialKey)) return; // config unchanged, keep the current material
+
+			if (hasMaterialKey) SharedMaterialRegistry.Release(materialKey);
+			runtimeMaterial = SharedMaterialRegistry.Acquire(key);
+			materialKey = key;
+			hasMaterialKey = true;
 		}
 
 		private void EnsureStore() {
@@ -788,7 +855,7 @@ namespace Sperlich.Text {
 		}
 
 		private void RebindFont() {
-			FontDefinition target = m_font != null ? m_font : SperlichTextSettings.GetOrDefault()?.defaultFont;
+			FontDefinition target = m_font != null ? m_font : STextSettings.GetOrDefault()?.defaultFont;
 			if (target == boundFont && store != null) return;
 
 			ReleaseFont();
@@ -796,7 +863,7 @@ namespace Sperlich.Text {
 			if (boundFont == null) return;
 
 			store = GlyphStoreRegistry.Acquire(boundFont);
-			if (store != null && (SperlichTextSettings.GetOrDefault()?.prewarmLatin1 ?? true)) {
+			if (store != null && (STextSettings.GetOrDefault()?.prewarmLatin1 ?? true)) {
 				store.PrewarmAscii();
 			}
 			if (store != null && store.Fonts.IsReady == false) {
@@ -819,8 +886,33 @@ namespace Sperlich.Text {
 			store = null;
 		}
 
+		private bool subscribedToDeviceChanges;
+
 		private void EnsureMarkup() {
 			markup = parser.Parse(m_text ?? string.Empty, m_richText, BuildBaseStyle());
+
+			// Only labels that actually use <glyph:...>/@Action@ need to react to a device change (most
+			// don't) -- (un)subscribe here, right after the parse that makes markup.Inserts current, rather
+			// than in OnEnable where it would still reflect the previous parse (or be null on first enable).
+			bool needsDeviceEvents = false;
+			if (markup.Inserts != null) {
+				for (int i = 0; i < markup.Inserts.Count; i++) {
+					if (markup.Inserts[i].IsActionGlyph) { needsDeviceEvents = true; break; }
+				}
+			}
+			if (needsDeviceEvents != subscribedToDeviceChanges) {
+				if (needsDeviceEvents) GlyphDeviceContext.DeviceChanged += OnGlyphDeviceChanged;
+				else GlyphDeviceContext.DeviceChanged -= OnGlyphDeviceChanged;
+				subscribedToDeviceChanges = needsDeviceEvents;
+			}
+		}
+
+		/// <summary>The active input device changed -- re-layout (not re-parse: <see cref="EnsureMarkup"/>'s
+		/// cached <c>markup.Inserts</c> is still valid, only which icon/fallback each `&lt;glyph:...&gt;` resolves
+		/// to can change) so every action-glyph re-resolves against the new <see cref="GlyphDeviceContext.ActiveDeviceId"/>.</summary>
+		private void OnGlyphDeviceChanged() {
+			layoutDirty = true;
+			SetVerticesDirty();
 		}
 
 		/// <summary>Seeds the parser with the component-level "Font Style" flags so they cover the whole label.</summary>
@@ -922,6 +1014,8 @@ namespace Sperlich.Text {
 			return new TextLayoutInput {
 				Text = markup.Text,
 				Spans = markup.Spans,
+				Inserts = markup.Inserts,
+				SpriteAsset = ResolvedSpriteAsset,
 				Glyphs = store,
 				BaseFontSize = size,
 				RectSize = rect,

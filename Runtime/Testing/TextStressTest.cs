@@ -119,7 +119,7 @@ namespace Sperlich.Text {
 
 		private void Start() {
 			if (m_font == null) {
-				m_font = SperlichTextSettings.GetOrDefault()?.defaultFont;
+				m_font = STextSettings.GetOrDefault()?.defaultFont;
 			}
 			PrewarmPool(m_targetCount);
 		}

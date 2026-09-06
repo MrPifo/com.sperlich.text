@@ -3,6 +3,7 @@ Shader "Sperlich/Text SDF"
     Properties
     {
         [PerRendererData] _MainTex ("Glyph Atlas (A = SDF)", 2D) = "white" {}
+        _SpriteTex ("Sprite Glyph Atlas (RGBA)", 2D) = "white" {}
         _Color ("Tint", Color) = (1,1,1,1)
 
         _FaceDilate ("Face Dilate", Range(-0.5,0.5)) = 0.0
@@ -101,6 +102,7 @@ Shader "Sperlich/Text SDF"
             sampler2D _MainTex;
             float4 _MainTex_ST;
             float4 _MainTex_TexelSize;
+            sampler2D _SpriteTex;
             fixed4 _Color;
             float _FaceDilate;
             float _Sharpness;
@@ -126,7 +128,10 @@ Shader "Sperlich/Text SDF"
                 UNITY_INITIALIZE_VERTEX_OUTPUT_STEREO(o);
                 o.worldPos = v.vertex;
                 o.vertex = UnityObjectToClipPos(v.vertex);
-                o.uv0 = float4(TRANSFORM_TEX(v.uv0.xy, _MainTex), v.uv0.z, v.uv0.w);
+                // fxMode 4 (flat sprite) samples _SpriteTex directly -- its UVs must not go through the
+                // font atlas's _MainTex_ST tiling/offset.
+                bool isSprite = v.uv1.x > 3.5;
+                o.uv0 = isSprite ? v.uv0 : float4(TRANSFORM_TEX(v.uv0.xy, _MainTex), v.uv0.z, v.uv0.w);
                 o.uv1 = v.uv1;
                 o.cellRect = v.uv2;
                 o.color = v.color * _Color;
@@ -255,8 +260,22 @@ Shader "Sperlich/Text SDF"
                     return solid;
                 }
 
+                // fxMode 4: flat (non-SDF) inline sprite glyph -- straight RGBA sample from a separate
+                // atlas, no distance-field reconstruction, no cellRect clamp (that's a font-atlas concept).
+                if (i.uv1.x > 3.5)
+                {
+                    fixed4 sc = tex2D(_SpriteTex, i.uv0.xy) * i.color;
+                    #ifdef UNITY_UI_CLIP_RECT
+                    sc.a *= UnityGet2DClipping(i.worldPos.xy, _ClipRect);
+                    #endif
+                    #ifdef UNITY_UI_ALPHACLIP
+                    clip(sc.a - 0.001);
+                    #endif
+                    return sc;
+                }
+
                 float uv_per_local = i.uv1.w;
-                
+
                 float2 uvClamp = clamp(i.uv0.xy, i.cellRect.xy, i.cellRect.zw);
                 float4 fieldTex = tex2Dlod(_MainTex, float4(uvClamp, 0, 0));
                 #ifdef SPERLICH_MTSDF
