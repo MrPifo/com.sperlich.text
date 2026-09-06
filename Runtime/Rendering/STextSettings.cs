@@ -52,8 +52,10 @@ namespace Sperlich.Text {
 		/// </summary>
 		public static STextSettings GetOrDefault() {
 			if (cached != null) return cached;
+#if !UNITY_EDITOR
 			if (triedLoad) return cached;
 			triedLoad = true;
+#endif
 			cached = ProjectAssetResolver.FindSingle<STextSettings>("STextSettings");
 			return cached;
 		}

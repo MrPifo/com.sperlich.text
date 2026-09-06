@@ -87,8 +87,10 @@ namespace Sperlich.Text {
 		/// assets that also happen to sit under a Resources folder don't trip the "multiple found" error.</summary>
 		public static SpriteGlyphAsset GetDefault() {
 			if (cachedDefault != null) return cachedDefault;
+#if !UNITY_EDITOR
 			if (triedLoadDefault) return cachedDefault;
 			triedLoadDefault = true;
+#endif
 			cachedDefault = ProjectAssetResolver.FindSingle<SpriteGlyphAsset>(
 				"SpriteGlyphAsset (Role = Main)", a => a.Role == SpriteGlyphAssetRole.Main);
 			return cachedDefault;

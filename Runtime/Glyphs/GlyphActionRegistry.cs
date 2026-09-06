@@ -70,8 +70,10 @@ namespace Sperlich.Text {
 		/// <summary>Project-wide singleton, same Resources-folder / "exactly one" rule as <see cref="STextSettings"/>.</summary>
 		public static GlyphActionRegistry GetDefault() {
 			if (cached != null) return cached;
+#if !UNITY_EDITOR
 			if (triedLoad) return cached;
 			triedLoad = true;
+#endif
 			cached = ProjectAssetResolver.FindSingle<GlyphActionRegistry>("GlyphActionRegistry");
 			return cached;
 		}

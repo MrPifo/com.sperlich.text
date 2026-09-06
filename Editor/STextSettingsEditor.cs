@@ -67,19 +67,36 @@ namespace Sperlich.Text.EditorTools {
 		/// <see cref="GlyphActionRegistry"/> devices instead of free text -- keeps the value in sync with
 		/// whatever device IDs are actually registered (a typo here would otherwise silently never match).</summary>
 		private static VisualElement MakeDeviceIdDropdown(SerializedProperty prop) {
-			List<GlyphActionRegistry.DeviceDefinition> Devices() {
+			var devices = new List<GlyphActionRegistry.DeviceDefinition>();
+
+			void Rescan() {
+				devices.Clear();
+				devices.Add(new GlyphActionRegistry.DeviceDefinition { Title = "None", DeviceId = "" });
 				GlyphActionRegistry registry = GlyphActionRegistry.GetDefault();
-				var list = new List<GlyphActionRegistry.DeviceDefinition> { new() { Title = "None", DeviceId = "" } };
-				if (registry != null) {
-					foreach (GlyphActionRegistry.DeviceDefinition d in registry.Devices) {
-						if (!string.IsNullOrEmpty(d.DeviceId)) list.Add(d);
+				if (registry == null) {
+					string[] guids = AssetDatabase.FindAssets("t:" + nameof(GlyphActionRegistry));
+					if (guids.Length > 0) {
+						string path = AssetDatabase.GUIDToAssetPath(guids[0]);
+						registry = AssetDatabase.LoadAssetAtPath<GlyphActionRegistry>(path);
 					}
 				}
-				return list;
+				if (registry != null) {
+					foreach (GlyphActionRegistry.DeviceDefinition d in registry.Devices) {
+						if (!string.IsNullOrEmpty(d.DeviceId)) devices.Add(d);
+					}
+				}
+			}
+			Rescan();
+
+			int Count() => devices.Count;
+
+			string LabelFor(int i) {
+				if (i < 0 || i >= devices.Count) return "—";
+				GlyphActionRegistry.DeviceDefinition d = devices[i];
+				return string.IsNullOrEmpty(d.DeviceId) ? d.Title : $"{(string.IsNullOrEmpty(d.Title) ? d.DeviceId : d.Title)} ({d.DeviceId})";
 			}
 
 			int Selected() {
-				List<GlyphActionRegistry.DeviceDefinition> devices = Devices();
 				string current = prop.stringValue ?? "";
 				for (int i = 0; i < devices.Count; i++) {
 					if (string.Equals(devices[i].DeviceId, current, System.StringComparison.OrdinalIgnoreCase)) return i;
@@ -87,19 +104,16 @@ namespace Sperlich.Text.EditorTools {
 				return 0;
 			}
 
-			VisualElement field = SperlichEditorWidgets.BuildDropdown(
-				() => Devices().Count,
-				i => {
-					GlyphActionRegistry.DeviceDefinition d = Devices()[i];
-					return string.IsNullOrEmpty(d.DeviceId) ? d.Title : $"{(string.IsNullOrEmpty(d.Title) ? d.DeviceId : d.Title)} ({d.DeviceId})";
-				},
-				Selected,
-				i => {
-					prop.stringValue = Devices()[i].DeviceId;
+			void Pick(int i) {
+				if (i >= 0 && i < devices.Count) {
+					prop.stringValue = devices[i].DeviceId;
 					prop.serializedObject.ApplyModifiedProperties();
 					GlyphDeviceContext.RefreshEditorDefault();
-				},
-				Accent);
+				}
+			}
+
+			VisualElement field = SperlichEditorWidgets.BuildDropdown(Count, LabelFor, Selected, Pick, Accent);
+			field.RegisterCallback<PointerDownEvent>(_ => Rescan(), TrickleDown.TrickleDown);
 			SperlichFieldColumn.HideInternalLabel(field);
 			return field;
 		}

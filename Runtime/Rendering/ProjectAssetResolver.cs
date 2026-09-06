@@ -19,6 +19,20 @@ namespace Sperlich.Text {
 		/// count towards the uniqueness check).</summary>
 		public static T FindSingle<T>(string typeLabel, Func<T, bool> predicate) where T : UnityEngine.Object {
 			T[] all = Resources.LoadAll<T>("");
+#if UNITY_EDITOR
+			if (all.Length == 0) {
+				string[] guids = UnityEditor.AssetDatabase.FindAssets("t:" + typeof(T).Name);
+				var list = new System.Collections.Generic.List<T>();
+				foreach (string g in guids) {
+					string path = UnityEditor.AssetDatabase.GUIDToAssetPath(g);
+					if (path.Replace('\\', '/').IndexOf("/Resources/", StringComparison.OrdinalIgnoreCase) >= 0) {
+						var obj = UnityEditor.AssetDatabase.LoadAssetAtPath<T>(path);
+						if (obj != null) list.Add(obj);
+					}
+				}
+				all = list.ToArray();
+			}
+#endif
 			if (predicate != null) all = all.Where(predicate).ToArray();
 			if (all.Length > 1) {
 				var names = new System.Text.StringBuilder();
