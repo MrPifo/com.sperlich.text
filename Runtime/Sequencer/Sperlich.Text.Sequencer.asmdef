@@ -1,0 +1,18 @@
+{
+    "name": "Sperlich.Text.Sequencer",
+    "rootNamespace": "Sperlich.Text",
+    "references": [
+        "GUID:ca89b571b39a55c419521d7a8cdb2e22",
+        "GUID:dee7bb70060955248adaa7701fc90672",
+        "GUID:80ecb87cae9c44d19824e70ea7229748"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
