@@ -30,8 +30,12 @@ namespace Sperlich.Text {
 			public int GlowTaps;
 			public float BloomFalloff;
 			public int BloomTaps;
+			/// <summary>0 = shared. A non-zero id (edit mode) gives that component its own material, so
+			/// <see cref="Rekey"/> can update it in place.</summary>
+			public int Owner;
 
 			public bool Equals(Key o) =>
+				Owner == o.Owner &&
 				Shader == o.Shader && Mtsdf == o.Mtsdf && SpriteAtlas == o.SpriteAtlas &&
 				FaceDilate.Equals(o.FaceDilate) && Sharpness.Equals(o.Sharpness) &&
 				OutlineColor.Equals(o.OutlineColor) && OutlineWidth.Equals(o.OutlineWidth) && OutlineMode == o.OutlineMode &&
@@ -63,6 +67,7 @@ namespace Sperlich.Text {
 					h = h * 397 ^ GlowTaps;
 					h = h * 397 ^ BloomFalloff.GetHashCode();
 					h = h * 397 ^ BloomTaps;
+					h = h * 397 ^ Owner;
 					return h;
 				}
 			}
@@ -100,7 +105,26 @@ namespace Sperlich.Text {
 			}
 		}
 
+		/// <summary>
+		/// Switches a component from <paramref name="oldKey"/> to <paramref name="newKey"/>. When it is the only
+		/// user of its material and no material exists for the new config yet, the same instance is updated in
+		/// place. A new instance would make the Unity inspector rebuild (material preview) on every slider step,
+		/// which cancels the drag.
+		/// </summary>
+		public static Material Rekey(in Key oldKey, in Key newKey) {
+			bool soleOwner = materials.TryGetValue(oldKey, out Entry e) && e.RefCount == 1 && e.Material != null;
+			if (soleOwner && !materials.ContainsKey(newKey)) {
+				materials.Remove(oldKey);
+				ApplyKey(e.Material, newKey);
+				materials[newKey] = e;
+				return e.Material;
+			}
+			Release(oldKey);
+			return Acquire(newKey);
+		}
+
 		private static void ApplyKey(Material mat, in Key key) {
+			if (mat.shader != key.Shader) mat.shader = key.Shader;
 			mat.SetFloat("_FaceDilate", key.FaceDilate);
 			mat.SetFloat("_Sharpness", key.Sharpness);
 			mat.SetColor("_OutlineColor", key.OutlineColor);
@@ -116,7 +140,7 @@ namespace Sperlich.Text {
 			mat.SetFloat("_GlowTaps", key.GlowTaps);
 			mat.SetFloat("_BloomFalloff", key.BloomFalloff);
 			mat.SetFloat("_BloomTaps", key.BloomTaps);
-			if (key.SpriteAtlas != null) mat.SetTexture("_SpriteTex", key.SpriteAtlas);
+			mat.SetTexture("_SpriteTex", key.SpriteAtlas);
 			if (key.Mtsdf) mat.EnableKeyword("SPERLICH_MTSDF");
 			else mat.DisableKeyword("SPERLICH_MTSDF");
 		}

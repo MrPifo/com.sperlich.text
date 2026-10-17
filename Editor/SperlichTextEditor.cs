@@ -37,15 +37,17 @@ namespace Sperlich.Text.EditorTools {
 			// ---- Content -------------------------------------------------------------------------
 			var content = Section(root, "CONTENT", true);
 			content.Add(BuildTextArea());
+			SerializedProperty fontStyleProp = serializedObject.FindProperty("m_fontStyle");
 			content.Add(col.Row("Font Style", SperlichEditorWidgets.CreateFlagButtons(
-				serializedObject.FindProperty("m_fontStyle"),
+				fontStyleProp,
 				new[] { "B", "I", "U", "S", "AB", "ab", "Ab" },
 				new[] { "Bold", "Italic", "Underline", "Strikethrough", "UPPERCASE", "lowercase", "SmallCaps" },
 				Accent,
 				new[] { new[] { 4, 5, 6 } },      // Uppercase / Lowercase / SmallCaps are mutually exclusive
-				new[] { 4 })));                   // divider between the text-style and the case buttons
+				new[] { 4 }), fontStyleProp));    // divider between the text-style and the case buttons
 			content.Add(BoolRow("m_richText", "Rich Text"));
-			content.Add(col.Row("Font", SperlichEditorWidgets.CreateAssetDropdown<FontDefinition>(serializedObject.FindProperty("m_font"), Accent)));
+			SerializedProperty fontProp = serializedObject.FindProperty("m_font");
+			content.Add(col.Row("Font", SperlichEditorWidgets.CreateAssetDropdown<FontDefinition>(fontProp, Accent), fontProp));
 			content.Add(Field("m_Color", "Base Color"));
 
 			// ---- Layout (sizing folded in) -----------------------------------------------------
@@ -61,24 +63,20 @@ namespace Sperlich.Text.EditorTools {
 			autoBox.Add(col.Property(serializedObject.FindProperty("m_autoSizeMin"), "Min", indent: 1));
 			autoBox.Add(col.Property(serializedObject.FindProperty("m_autoSizeMax"), "Max", indent: 1));
 			layout.Add(autoBox);
-			layout.Add(AlignedRow("Align", AlignButtons(serializedObject.FindProperty("m_align"), false,
-				new[] { "Left", "Center", "Right", "Justified", "Flush (justify last line too)", "Geometry Center" })));
-			layout.Add(AlignedRow("Vertical Align", AlignButtons(serializedObject.FindProperty("m_verticalAlign"), true,
-				new[] { "Top", "Middle", "Bottom", "Baseline" })));
+			layout.Add(AlignedRow("Align", "m_align", false,
+				new[] { "Left", "Center", "Right", "Justified", "Flush (justify last line too)", "Geometry Center" }));
+			layout.Add(AlignedRow("Vertical Align", "m_verticalAlign", true,
+				new[] { "Top", "Middle", "Bottom", "Baseline" }));
 			layout.Add(EnumRow("m_wrap", "Wrap"));
 			layout.Add(EnumRow("m_overflow", "Overflow"));
 
-			layout.Add(col.Row("Spacing Options (em)", SperlichEditorWidgets.CreateFieldCluster(120,
-				SperlichEditorWidgets.CreateCompactField("Character", serializedObject.FindProperty("m_extraTrackingEm")),
-				SperlichEditorWidgets.CreateCompactField("Word", serializedObject.FindProperty("m_wordSpacingEm")),
-				SperlichEditorWidgets.CreateCompactField("Line", serializedObject.FindProperty("m_lineSpacing")),
-				SperlichEditorWidgets.CreateCompactField("Paragraph", serializedObject.FindProperty("m_paragraphSpacing")))));
+			layout.Add(ClusterRow("Spacing Options (em)", 120, false,
+				("Character", "m_extraTrackingEm"), ("Word", "m_wordSpacingEm"),
+				("Line", "m_lineSpacing"), ("Paragraph", "m_paragraphSpacing")));
 
-			layout.Add(col.Row("Margins", SperlichEditorWidgets.CreateFieldCluster(52,
-				SperlichEditorWidgets.CreateCompactField("Left", serializedObject.FindProperty("m_marginLeft"), captionAbove: true),
-				SperlichEditorWidgets.CreateCompactField("Top", serializedObject.FindProperty("m_marginTop"), captionAbove: true),
-				SperlichEditorWidgets.CreateCompactField("Right", serializedObject.FindProperty("m_marginRight"), captionAbove: true),
-				SperlichEditorWidgets.CreateCompactField("Bottom", serializedObject.FindProperty("m_marginBottom"), captionAbove: true))));
+			layout.Add(ClusterRow("Margins", 52, true,
+				("Left", "m_marginLeft"), ("Top", "m_marginTop"),
+				("Right", "m_marginRight"), ("Bottom", "m_marginBottom")));
 
 			// ---- Effects ----------------------------------------------------------------------
 			var fx = Section(root, "EFFECTS", false);
@@ -100,8 +98,8 @@ namespace Sperlich.Text.EditorTools {
 
 			var shadow = EffectSection(root, "DROP SHADOW", "m_shadow", false);
 			shadow.Add(Field("m_shadowColor", "Color"));
-			shadow.Add(col.Row("Offset", SperlichEditorWidgets.CreateRadialVector2Field(
-				serializedObject.FindProperty("m_shadowOffset"), 30f, Accent)));
+			SerializedProperty shadowOffsetProp = serializedObject.FindProperty("m_shadowOffset");
+			shadow.Add(col.Row("Offset", SperlichEditorWidgets.CreateRadialVector2Field(shadowOffsetProp, 30f, Accent), shadowOffsetProp));
 			shadow.Add(Field("m_shadowSoftness", "Softness (px)"));
 			shadow.Add(Field("m_shadowDilate", "Dilate"));
 			shadow.Add(EnumRow("m_shadowQuality", "Quality"));
@@ -177,6 +175,7 @@ namespace Sperlich.Text.EditorTools {
 			chk.RegisterCallback<ClickEvent>(evt => evt.StopPropagation());
 			chk.RegisterCallback<PointerDownEvent>(evt => evt.StopPropagation());
 			header.Add(chk);
+			if (p != null) SperlichPrefabOverride.Attach(header, null, p, barLeft: 0);
 
 			var paramsBox = new VisualElement { style = { marginTop = 2 } };
 			body.Add(paramsBox);
@@ -206,10 +205,26 @@ namespace Sperlich.Text.EditorTools {
 			return col.Property(sp, label);
 		}
 
-		private VisualElement AlignedRow(string label, VisualElement control) => col.Row(label, control);
+		private VisualElement AlignedRow(string label, string prop, bool isVertical, string[] tips) {
+			SerializedProperty p = serializedObject.FindProperty(prop);
+			return col.Row(label, AlignButtons(p, isVertical, tips), p);
+		}
 
-		private VisualElement EnumRow(string prop, string label) =>
-			col.Row(label, SperlichEditorWidgets.CreateEnumDropdown(serializedObject.FindProperty(prop), Accent));
+		private VisualElement EnumRow(string prop, string label) {
+			SerializedProperty p = serializedObject.FindProperty(prop);
+			return col.Row(label, SperlichEditorWidgets.CreateEnumDropdown(p, Accent), p);
+		}
+
+		/// <summary>Zeile aus kompakten Zahlenfeldern (Margins, Spacing). Override-Balken, sobald eines davon überschrieben ist.</summary>
+		private VisualElement ClusterRow(string label, int minFieldWidth, bool captionAbove, params (string caption, string prop)[] fields) {
+			var props = new SerializedProperty[fields.Length];
+			var cells = new VisualElement[fields.Length];
+			for (int i = 0; i < fields.Length; i++) {
+				props[i] = serializedObject.FindProperty(fields[i].prop);
+				cells[i] = SperlichEditorWidgets.CreateCompactField(fields[i].caption, props[i], captionAbove);
+			}
+			return col.Row(label, SperlichEditorWidgets.CreateFieldCluster(minFieldWidth, cells), props);
+		}
 
 		private VisualElement BoolRow(string prop, string label) {
 			SerializedProperty p = serializedObject.FindProperty(prop);
@@ -220,7 +235,7 @@ namespace Sperlich.Text.EditorTools {
 				serializedObject.ApplyModifiedProperties();
 				pill.SetValue(p.boolValue);
 			};
-			VisualElement row = col.Row(label, pill);
+			VisualElement row = col.Row(label, pill, p);
 			row.TrackPropertyValue(p, sp => pill.SetValue(sp.boolValue));
 			return row;
 		}
@@ -409,6 +424,7 @@ namespace Sperlich.Text.EditorTools {
 			del.style.marginLeft = 4;
 			top.Add(del);
 			card.Add(top);
+			SperlichPrefabOverride.Attach(top, null, new[] { enabledProp, effectProp });
 
 			var paramHost = new VisualElement { style = { marginTop = 3 } };
 			PopulateEffectParams(paramHost, el, (BuiltinEffect)effectProp.enumValueIndex);
@@ -439,14 +455,14 @@ namespace Sperlich.Text.EditorTools {
 			var gf = new UnityEditor.UIElements.GradientField { style = { flexGrow = 1 } };
 			gf.BindProperty(prop);
 			SperlichFieldColumn.HideInternalLabel(gf);
-			return effectCol.Row("Color Ramp", gf);
+			return effectCol.Row("Color Ramp", gf, prop);
 		}
 
 		private VisualElement ColorRow(SerializedProperty prop, string label) {
 			var cf = new UnityEditor.UIElements.ColorField { style = { flexGrow = 1 }, showAlpha = true };
 			cf.BindProperty(prop);
 			SperlichFieldColumn.HideInternalLabel(cf);
-			return effectCol.Row(label, cf);
+			return effectCol.Row(label, cf, prop);
 		}
 
 		/// <summary>"Percent Slider"-Zeile: Slider von 0..1 mit Prozentanzeige (0..100%).</summary>
@@ -484,7 +500,7 @@ namespace Sperlich.Text.EditorTools {
 
 			row.Add(slider);
 			row.Add(percentLabel);
-			return effectCol.Row(label, row);
+			return effectCol.Row(label, row, prop);
 		}
 
 		/// <summary>Slider-Zeile für Float-Werte mit min/max Grenzen und Zahlenfeld.</summary>
@@ -497,7 +513,7 @@ namespace Sperlich.Text.EditorTools {
 			var tf = new TextField { style = { flexGrow = 1 } };
 			tf.BindProperty(prop);
 			SperlichFieldColumn.HideInternalLabel(tf);
-			return effectCol.Row(label, tf);
+			return effectCol.Row(label, tf, prop);
 		}
 
 		private void PopulateEffectParams(VisualElement host, SerializedProperty el, BuiltinEffect effect) {
@@ -1035,7 +1051,12 @@ namespace Sperlich.Text.EditorTools {
 			footer.Add(grip);
 
 			box.Add(footer);
-			return box;
+
+			// box clips its content, so the override bar hangs off an outer wrapper
+			var wrap = new VisualElement();
+			wrap.Add(box);
+			SperlichPrefabOverride.Attach(wrap, null, serializedObject.FindProperty("m_text"));
+			return wrap;
 		}
 
 		/// <summary>Appends a tag by editing the <see cref="TextField"/> value in place (the binding then

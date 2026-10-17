@@ -830,7 +830,9 @@ namespace Sperlich.Text {
 		/// literal same <see cref="Material"/> instance and therefore batch into one uGUI draw call — same
 		/// model TextMeshPro uses. A component whose config differs from every other just gets its own
 		/// material, same as before; never mutate <see cref="runtimeMaterial"/>'s properties in place here,
-		/// since it may be shared with other components right now.
+		/// since it may be shared with other components right now. <see cref="SharedMaterialRegistry.Rekey"/>
+		/// does that only when this component is the sole user. In edit mode every label gets its own material
+		/// (no batching there), so inspector edits never swap the instance.
 		/// </summary>
 		private void PushMaterialProps() {
 			Shader shader = STextSettings.GetOrDefault()?.ResolveShader() ?? Shader.Find("Sperlich/Text SDF");
@@ -861,13 +863,16 @@ namespace Sperlich.Text {
 				GlowOuter = m_glowOuter,
 				GlowTaps = (int)m_glowQuality,
 				BloomFalloff = m_bloomFallOff,
-				BloomTaps = m_bloomSamples
+				BloomTaps = m_bloomSamples,
+				// Edit mode: own material per label, so inspector edits update it in place (see Rekey).
+				Owner = Application.isPlaying ? 0 : GetInstanceID(),
 			};
 
 			if (hasMaterialKey && key.Equals(materialKey)) return; // config unchanged, keep the current material
 
-			if (hasMaterialKey) SharedMaterialRegistry.Release(materialKey);
-			runtimeMaterial = SharedMaterialRegistry.Acquire(key);
+			runtimeMaterial = hasMaterialKey
+				? SharedMaterialRegistry.Rekey(materialKey, key)
+				: SharedMaterialRegistry.Acquire(key);
 			materialKey = key;
 			hasMaterialKey = true;
 		}
