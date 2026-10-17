@@ -61,12 +61,6 @@ namespace Sperlich.Text.EditorTools {
 			AssetDatabase.importPackageFailed -= OnFailed;
 		}
 
-		private static void RefreshAllLabels() {
-			GlyphStoreRegistry.EditorPurgeAll();
-			foreach (SText label in Object.FindObjectsByType<SText>(
-				         FindObjectsInactive.Include, FindObjectsSortMode.None)) {
-				label.EditorRebindFont();
-			}
-		}
+		private static void RefreshAllLabels() => SText.EditorPurgeAndRebindAll();
 	}
 }

@@ -319,11 +319,7 @@ namespace Sperlich.Text.EditorTools {
 
 			// Drop cached GlyphStores (they wrap the now-replaced MsdfFontData) and rebind live labels,
 			// otherwise the scene keeps rendering the previous bake.
-			GlyphStoreRegistry.EditorPurgeAll();
-			foreach (SText label in UnityEngine.Object.FindObjectsByType<SText>(
-				         FindObjectsInactive.Include, FindObjectsSortMode.None)) {
-				label.EditorRebindFont();
-			}
+			SText.EditorPurgeAndRebindAll();
 
 			int dropped = res.dropped.Count;
 			Debug.Log($"[SperlichText] Baked MTSDF for '{def.name}': {res.glyphs.Count} glyphs, " +

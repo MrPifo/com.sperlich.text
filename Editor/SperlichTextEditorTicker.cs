@@ -26,9 +26,9 @@ namespace Sperlich.Text.EditorTools {
 			if (now - lastTick < 1.0 / 60.0) return;
 			lastTick = now;
 
-			SText[] all = Object.FindObjectsByType<SText>(FindObjectsInactive.Exclude, FindObjectsSortMode.None);
+			var all = SText.EditorFindAllLabels(includeInactive: false);
 			bool any = false;
-			for (int i = 0; i < all.Length; i++) {
+			for (int i = 0; i < all.Count; i++) {
 				SText t = all[i];
 				if (t == null || !t.isActiveAndEnabled || !t.HasAnimatedEffects) continue;
 				t.EditorAnimateTick();

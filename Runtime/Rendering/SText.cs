@@ -614,6 +614,29 @@ namespace Sperlich.Text {
 			textDirty = layoutDirty = true;
 			SetAllDirty();
 		}
+
+		/// <summary>
+		/// Editor-only: every label in the open scenes plus the open Prefab Mode stage.
+		/// <c>FindObjectsByType</c> alone skips the prefab stage, because it lives in a preview scene.
+		/// </summary>
+		public static List<SText> EditorFindAllLabels(bool includeInactive = true) {
+			FindObjectsInactive inactive = includeInactive ? FindObjectsInactive.Include : FindObjectsInactive.Exclude;
+			var labels = new List<SText>(FindObjectsByType<SText>(inactive, FindObjectsSortMode.None));
+
+			var prefabStage = UnityEditor.SceneManagement.PrefabStageUtility.GetCurrentPrefabStage();
+			if (prefabStage != null && prefabStage.prefabContentsRoot != null) {
+				labels.AddRange(prefabStage.prefabContentsRoot.GetComponentsInChildren<SText>(includeInactive));
+			}
+			return labels;
+		}
+
+		/// <summary>Editor-only: purge all cached glyph stores and rebind every label, incl. Prefab Mode.</summary>
+		public static void EditorPurgeAndRebindAll() {
+			GlyphStoreRegistry.EditorPurgeAll();
+			foreach (SText label in EditorFindAllLabels()) {
+				label.EditorRebindFont();
+			}
+		}
 #endif
 
 		private void LateUpdate() {

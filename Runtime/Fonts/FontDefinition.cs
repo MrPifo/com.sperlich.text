@@ -127,11 +127,7 @@ namespace Sperlich.Text {
 
 		private static void RebuildLiveLabels() {
 			s_rebuildQueued = false;
-			GlyphStoreRegistry.EditorPurgeAll();
-			foreach (SText label in FindObjectsByType<SText>(
-				         FindObjectsInactive.Include, FindObjectsSortMode.None)) {
-				label.EditorRebindFont();
-			}
+			SText.EditorPurgeAndRebindAll();
 		}
 #endif
 	}

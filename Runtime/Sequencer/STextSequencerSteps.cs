@@ -1,115 +1,132 @@
 using System;
 using UnityEngine;
 using PrimeTween;
+using Sperlich.Easing;
+using Sperlich.EditorKit;
 using Sperlich.Sequencer;
 
 namespace Sperlich.Text {
 
-	// ==========================================================================================
-	// First external AnimSequencer extension module: mirrors the sequencer's built-in TMP_Text
-	// steps (TypeWriter, TextCounter, SetText) for SText. Nothing in com.sperlich.sequencer
-	// references this file or this assembly — the dependency runs one way, from this assembly's
-	// asmdef (Sperlich.Text.Sequencer) onto Sperlich.Sequencer's public IAnimStep/ITweenStep/
-	// IInstantStep contracts and AnimStepMenuAttribute. Discovery in the Editor's "Add Step" menu
-	// happens via TypeCache scanning for IAnimStep-derived types, so nothing here needs to be
-	// registered anywhere by hand.
-	//
-	// None of these attributes set a Group, so all three fall under the "Customs" top-level
-	// category with the shared "SText" subgroup — and since they're defined outside the sequencer's
-	// own assembly, the Editor also marks them as external automatically.
-	// ==========================================================================================
+	// External AnimSequencer module: SText versions of the built-in TMP_Text steps (TypeWriter, TextCounter,
+	// SetText). The dependency runs one way (this assembly -> Sperlich.Sequencer); the Editor finds these types
+	// via TypeCache and lists them under "Customs/SText".
 
+	[Serializable]
 	[AnimStepMenu(subGroup: "SText", tooltip: "Instantly sets an SText string.")]
-	public class STextSetTextStep : IInstantStep {
+	public class STextSetTextStep : IInstantStep, IRestorableState {
 		public SText target;
-		public string text = "";
+		[TextArea] public string text = "";
 
-		public float GetScheduleDuration() => 0.001f;
-		public string GetSummary() => "<b>SText: SetText</b>";
+		[NonSerialized] string _snapshot;
+
+		public float GetScheduleDuration(AnimSequencer owner) => 0f;
+		public string GetSummary() => "<b>SText: Set Text</b>";
 		public void Execute(AnimSequencer owner) {
 			if (target != null) target.SetText(text);
 		}
+		public void CaptureState(AnimSequencer owner) {
+			if (target != null) _snapshot = target.text;
+		}
+		public void RestoreState(AnimSequencer owner) {
+			if (target != null) target.SetText(_snapshot);
+		}
 	}
 
+	[Serializable]
 	[AnimStepMenu(subGroup: "SText", tooltip: "Counts an SText number from -> to over the duration.")]
-	public class STextTextCounterStep : ITweenStep, ISnapToStart {
+	public class STextTextCounterStep : ITweenStep, ISnapToStart, IRestorableState, IRerollable {
 		public SText target;
-		public bool animateFromCurrent = false;
-		public float from = 0f;
-		public float to = 100f;
+		[HideIf(nameof(animateFromCurrent))] public AnimFloat from = 0f;
+		public AnimFloat to = 100f;
 		public string format = "{0}";
 		public bool roundToInt = true;
-		[Min(0f)] public float duration = 0.3f;
+		[AnimLimit(0f)] public AnimFloat duration = 0.3f;
 		public Ease ease = Ease.OutCubic;
-		public AnimationCurve customCurve = AnimationCurve.EaseInOut(0f, 0f, 1f, 1f);
+		[ShowIf(nameof(ease), Ease.Custom)] public SCurve customCurve = AnimStepUtil.DefaultCurve();
+		[Tooltip("Start from the last value this step showed.")]
+		public bool animateFromCurrent;
 
 		[NonSerialized] float _currentValue;
+		[NonSerialized] float _start;
+		[NonSerialized] bool _started;
+		[NonSerialized] string _snapshot;
 
-		public float GetScheduleDuration() => Mathf.Max(duration, 0f);
-		public string GetSummary() => $"<b>SText: TextCounter</b>  {AnimStepUtil.Dur(duration)}";
-
-		public Tween CreateTween(AnimSequencer owner, float absoluteDelay) {
-			if (target == null) return Tween.Delay(Mathf.Max(duration + absoluteDelay, 0f));
-			float fromNum = animateFromCurrent ? _currentValue : from;
-			if (!animateFromCurrent) {
-				_currentValue = fromNum;
-				target.SetText(string.Format(format, roundToInt ? Mathf.RoundToInt(fromNum) : fromNum));
-			}
-			var settings = AnimStepUtil.MakeSettings(duration, ease, customCurve, absoluteDelay);
-			return Tween.Custom(target, new TweenSettings<float>(fromNum, to, settings), (obj, v) => {
-				_currentValue = v;
-				obj.SetText(string.Format(format, roundToInt ? Mathf.RoundToInt(v) : v));
-			});
+		public float GetScheduleDuration(AnimSequencer owner) => Mathf.Max(duration.Value, 0f);
+		public void Reroll() {
+			from.Reroll();
+			to.Reroll();
+			duration.Reroll();
 		}
+		public string GetSummary() => $"<b>SText: Counter</b>  {AnimStepUtil.Dur(duration)}";
+
+		public Tween CreateTween(AnimSequencer owner, float startDelay) {
+			if (target == null) return Tween.Delay(startDelay + duration.Value);
+			_started = false;
+			var settings = AnimStepUtil.MakeSettings(duration.Value, ease, customCurve, startDelay);
+			return Tween.Custom(this, new TweenSettings<float>(0f, 1f, settings), (s, v) => s.Apply(v));
+		}
+
+		void Apply(float t) {
+			if (target == null) return;
+			if (!_started) {
+				_start = animateFromCurrent ? _currentValue : from.Value;
+				_started = true;
+			}
+			Show(Mathf.LerpUnclamped(_start, to.Value, t));
+		}
+
+		void Show(float value) {
+			_currentValue = value;
+			target.SetText(string.Format(format, roundToInt ? Mathf.RoundToInt(value) : value));
+		}
+
 		public void SnapToStart(AnimSequencer owner) {
-			if (animateFromCurrent || target == null) return;
-			_currentValue = from;
-			target.SetText(string.Format(format, roundToInt ? Mathf.RoundToInt(from) : from));
+			if (!animateFromCurrent && target != null) Show(from.Value);
+		}
+		public void CaptureState(AnimSequencer owner) {
+			if (target != null) _snapshot = target.text;
+		}
+		public void RestoreState(AnimSequencer owner) {
+			if (target != null) target.SetText(_snapshot);
 		}
 	}
 
-	[AnimStepMenu(subGroup: "SText", tooltip: "Reveals an SText label character by character at a given speed.")]
-	public class STextTypeWriterStep : ITweenStep, ISnapToStart {
+	[Serializable]
+	[AnimStepMenu(subGroup: "SText", tooltip: "Reveals an SText label character by character.")]
+	public class STextTypeWriterStep : ITweenStep, ISnapToStart, IInterruptible, IRerollable {
 		public SText target;
-		public string text = "";
-		public float charsPerSecond = 20f;
+		[TextArea] public string text = "";
+		[AnimLimit(0.01f)] public AnimFloat charsPerSecond = 20f;
 
-		public float GetScheduleDuration() {
+		public float GetScheduleDuration(AnimSequencer owner) {
 			string t = string.IsNullOrEmpty(text) ? target != null ? target.text : null : text;
-			return Mathf.Max((t ?? "").Length, 1f) / Mathf.Max(charsPerSecond, 1f);
+			float cps = AnimValues.IsEstimatingMax ? charsPerSecond.Min : charsPerSecond.Value;
+			return Mathf.Max((t ?? "").Length, 1f) / Mathf.Max(cps, 0.01f);
 		}
-		public string GetSummary() => "<b>SText: TypeWriter</b>";
+		public void Reroll() => charsPerSecond.Reroll();
+		public string GetSummary() => "<b>SText: Type Writer</b>";
 
-		// SText drives its own character reveal internally (RevealController, ticked once per frame from
-		// SText's own render update) instead of exposing a TMP-style "maxVisibleCharacters" a tween can
-		// puppeteer frame-by-frame. So rather than lerping a visible-character count like the built-in TMP
-		// TypeWriterStep does, this configures SText's own reveal speed/text and lets it run on its own clock,
-		// wrapped in a plain timed tween sized to match (text length / charsPerSecond) for correct scheduling
-		// alongside other steps — and forces a full reveal via SkipTypewriter() when that tween completes, so
-		// a force-completed sequence (PrimeTween's Complete() jumps straight to v=1) can't leave the reveal
-		// visually stuck partway through.
-		public Tween CreateTween(AnimSequencer owner, float absoluteDelay) {
-			if (target == null) return Tween.Delay(Mathf.Max(absoluteDelay, 0f));
+		// SText runs its own reveal (RevealController). This step configures it and wraps it in a timed tween
+		// of the same length, and forces a full reveal when that tween ends (also on Complete()).
+		public Tween CreateTween(AnimSequencer owner, float startDelay) {
+			if (target == null) return Tween.Delay(startDelay);
 			if (!string.IsNullOrEmpty(text)) target.text = text;
-			target.Reveal.charsPerSecond = charsPerSecond;
+			target.Reveal.charsPerSecond = charsPerSecond.Value;
 			target.TypewriterEnabled = true;
 
-			float estimatedDur = GetScheduleDuration();
-			var settings = AnimStepUtil.MakeSettings(estimatedDur, Ease.Linear, null, absoluteDelay);
-			var capturedTarget = target;
-			bool skipped = false;
-			return Tween.Custom(target, new TweenSettings<float>(0f, 1f, settings), (obj, v) => {
-				if (v >= 1f && !skipped) {
-					skipped = true;
-					capturedTarget.SkipTypewriter();
-				}
+			var settings = AnimStepUtil.MakeSettings(GetScheduleDuration(owner), Ease.Linear, null, startDelay);
+			return Tween.Custom(this, new TweenSettings<float>(0f, 1f, settings), (s, v) => {
+				if (v >= 1f && s.target != null) s.target.SkipTypewriter();
 			});
 		}
 		public void SnapToStart(AnimSequencer owner) {
 			if (target == null) return;
 			if (!string.IsNullOrEmpty(text)) target.text = text;
-			target.Reveal.charsPerSecond = charsPerSecond;
+			target.Reveal.charsPerSecond = charsPerSecond.Value;
 			target.TypewriterEnabled = true;
+		}
+		public void OnInterrupted(AnimSequencer owner) {
+			if (target != null) target.SkipTypewriter();
 		}
 	}
 }
